@@ -70,3 +70,12 @@ is not restarted by deploying v14.
 
 **Verification:** Python syntax checks pass; live Discord interaction testing
 is required before relying on this update for a public event.
+
+## v15 — Clean Castle Gate and Arena qualification
+
+- Main private Castle Gate now has **four** core buttons: Enter Dungeon, My Fighter, Blacksmith, Kingdom.
+- Kingdom submenu contains gathering, world raid, merchant, treasury, rankings, and rules.
+- **Championship Arena button appears only for players with `floor >= 100`**, and the callback rechecks qualification before opening an Arena submenu with Enter Arena and My Arena Score. Existing arena handlers retain their own qualification checks.
+- Shared public Enter the Kingdom button remains persistent; new fighter creation opens the main Castle Gate directly.
+- Existing SQLite database and Railway settings are preserved.
+- Live Discord interactions have not been tested.

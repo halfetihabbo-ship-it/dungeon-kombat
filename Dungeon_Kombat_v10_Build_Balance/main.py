@@ -1126,7 +1126,7 @@ async def raid_claim(interaction):
 # Player-facing interface: /play is the sole slash command. Existing command
 # callbacks remain as internal handlers, preserving the same game rules.
 
-def castle_embed(title='THE KINGDOM\'S GATE', detail='Choose your path from the castle hall.'):
+def castle_embed(title='THE KINGDOM\'S GATE', detail='Enter the dungeon, manage your fighter, visit the blacksmith or explore the kingdom.'):
     e=discord.Embed(title=f'🏰 DUNGEON KOMBAT | {title}',description=detail,color=discord.Color.from_rgb(111,74,43))
     e.set_image(url='attachment://dungeon-panel.png')
     return e
@@ -1151,14 +1151,14 @@ class KingdomEntrance(discord.ui.View):
     @discord.ui.button(label='Enter the Kingdom', emoji='🏰', style=discord.ButtonStyle.primary, custom_id='dk:v14:enter_kingdom')
     async def enter(self, interaction, button):
         view=PlayMenu(interaction.user.id) if get_player(interaction.user.id) else RegistrationGate()
-        await interaction.response.send_message(embed=castle_embed('YOUR ADVENTURE', 'Create your fighter or choose your next destination.'),file=panel_file('event'),view=view,ephemeral=True)
+        await interaction.response.send_message(embed=castle_embed('YOUR ADVENTURE', 'Create your fighter or choose your next destination. The Championship Arena appears after Floor 100.'),file=panel_file('event'),view=view,ephemeral=True)
 
 class OwnedView(discord.ui.View):
     def __init__(self,uid,timeout=900):
         super().__init__(timeout=timeout);self.uid=uid
     async def interaction_check(self,interaction):
         if interaction.user.id!=self.uid:
-            await ui_reply(interaction, 'This menu belongs to another adventurer. Open your own with `/play`.',ephemeral=True)
+            await ui_reply(interaction, 'This menu belongs to another adventurer. Use the shared Enter the Kingdom panel to open your own.',ephemeral=True)
             return False
         return True
 
@@ -1270,31 +1270,61 @@ async def open_actions(i,kind):
     }
     await ui_reply(i, embed=discord.Embed(title='📜 '+kind.title(),description=descriptions[kind],color=discord.Color.from_rgb(124,89,50)),view=ActionsView(i.user.id,kind),ephemeral=True)
 
-class PlayMenu(OwnedView):
-    @discord.ui.button(label='Enter Dungeon',emoji='⚔️',style=discord.ButtonStyle.secondary,row=0)
-    async def enter(self,i,b): await dungeon.callback(i)
-    @discord.ui.button(label='My Fighter',emoji='🛡️',style=discord.ButtonStyle.secondary,row=0)
-    async def hero(self,i,b): await ui_reply(i, embed=discord.Embed(title='🛡️ Fighter Hall',description='Manage your character, stats, specialization and appearance.',color=discord.Color.from_rgb(124,89,50)),view=FighterMenu(self.uid),ephemeral=True)
-    @discord.ui.button(label='Blacksmith',emoji='🔨',style=discord.ButtonStyle.secondary,row=0)
-    async def forge(self,i,b): await ui_reply(i, embed=discord.Embed(title='🔨 Royal Blacksmith',description='Upgrade and enchant your equipment.',color=discord.Color.from_rgb(124,89,50)),view=ForgeMenu(self.uid),ephemeral=True)
-    @discord.ui.button(label='Gather Resources',emoji='⛏️',style=discord.ButtonStyle.secondary,row=1)
-    async def gather(self,i,b): await ui_reply(i, embed=discord.Embed(title='⛏️ The Kingdom Outskirts',description='Earn gold and materials. Stamina regenerates over time.',color=discord.Color.from_rgb(124,89,50)),view=GatherMenu(self.uid),ephemeral=True)
-    @discord.ui.button(label='Treasury',emoji='🪙',style=discord.ButtonStyle.secondary,row=1)
+class KingdomMenu(OwnedView):
+    """Secondary destinations: keep the Castle Gate uncluttered."""
+    @discord.ui.button(label='Gather Resources',emoji='⛏️',style=discord.ButtonStyle.secondary,row=0)
+    async def gather(self,i,b):
+        await ui_reply(i,embed=discord.Embed(title='⛏️ Kingdom Outskirts',description='Gather materials or check your stamina.',color=discord.Color.from_rgb(124,89,50)),view=GatherMenu(self.uid),ephemeral=True)
+    @discord.ui.button(label='World Raid',emoji='🐉',style=discord.ButtonStyle.secondary,row=0)
+    async def raid(self,i,b): await raid_menu(i)
+    @discord.ui.button(label='Merchant',emoji='🪙',style=discord.ButtonStyle.secondary,row=1)
+    async def merchant(self,i,b): await merchant_menu(i)
+    @discord.ui.button(label='Treasury',emoji='💰',style=discord.ButtonStyle.secondary,row=1)
     async def treasury(self,i,b): await wallet.callback(i)
-    @discord.ui.button(label='Championship Arena',emoji='🏟️',style=discord.ButtonStyle.secondary,row=1)
-    async def arena_button(self,i,b): await ARENA_COMMAND.callback(i)
     @discord.ui.button(label='Rankings',emoji='🏆',style=discord.ButtonStyle.secondary,row=2)
     async def rankings(self,i,b): await leaderboard.callback(i)
-    @discord.ui.button(label='Arena Score',emoji='🎯',style=discord.ButtonStyle.secondary,row=2)
-    async def score(self,i,b): await ARENA_SCORE_COMMAND.callback(i)
     @discord.ui.button(label='Rules & Dates',emoji='📜',style=discord.ButtonStyle.secondary,row=2)
     async def rules(self,i,b): await event.callback(i)
-    @discord.ui.button(label='World Raid',emoji='🐉',style=discord.ButtonStyle.secondary,row=3)
-    async def raid(self,i,b): await raid_menu(i)
-    @discord.ui.button(label='Wandering Merchant',emoji='🪙',style=discord.ButtonStyle.secondary,row=3)
-    async def merchant(self,i,b): await merchant_menu(i)
-    @discord.ui.button(label='Return to Castle',emoji='🏰',style=discord.ButtonStyle.secondary,row=4)
-    async def create(self,i,b): await open_castle(i)
+    @discord.ui.button(label='Castle Gate',emoji='🏰',style=discord.ButtonStyle.secondary,row=3)
+    async def back(self,i,b): await open_castle(i)
+
+class PlayMenu(OwnedView):
+    """Four core destinations, with a fifth unlocked after floor 100."""
+    def __init__(self,uid):
+        super().__init__(uid)
+        player=get_player(uid)
+        if player and player['floor'] >= 100:
+            self.add_item(ArenaEntryButton())
+
+    @discord.ui.button(label='Enter Dungeon',emoji='⚔️',style=discord.ButtonStyle.primary,row=0)
+    async def enter(self,i,b): await dungeon.callback(i)
+    @discord.ui.button(label='My Fighter',emoji='🛡️',style=discord.ButtonStyle.secondary,row=0)
+    async def hero(self,i,b):
+        await ui_reply(i,embed=discord.Embed(title='🛡️ Fighter Hall',description='Manage your character, stats, specialization and appearance.',color=discord.Color.from_rgb(124,89,50)),view=FighterMenu(self.uid),ephemeral=True)
+    @discord.ui.button(label='Blacksmith',emoji='🔨',style=discord.ButtonStyle.secondary,row=1)
+    async def forge(self,i,b):
+        await ui_reply(i,embed=discord.Embed(title='🔨 Royal Blacksmith',description='Upgrade and enchant your equipment.',color=discord.Color.from_rgb(124,89,50)),view=ForgeMenu(self.uid),ephemeral=True)
+    @discord.ui.button(label='Kingdom',emoji='🏰',style=discord.ButtonStyle.secondary,row=1)
+    async def kingdom(self,i,b):
+        await ui_reply(i,embed=discord.Embed(title='🏰 Explore the Kingdom',description='Gather resources, join the world raid, visit the merchant, or view rankings and rules.',color=discord.Color.from_rgb(124,89,50)),view=KingdomMenu(self.uid),ephemeral=True)
+
+class ArenaEntryButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(label='Championship Arena',emoji='🏟️',style=discord.ButtonStyle.primary,row=2)
+    async def callback(self,interaction):
+        # Revalidate server-side: a visible button never grants arena access.
+        player=get_player(interaction.user.id)
+        if not player or player['floor'] < 100:
+            return await ui_reply(interaction,'🔒 Clear all 100 dungeon floors to qualify.',ephemeral=True)
+        await ui_reply(interaction,embed=discord.Embed(title='🏟️ Championship Arena',description='You have conquered Floor 100. Enter your tactical challenges or review your Arena score.',color=discord.Color.from_rgb(124,89,50)),view=ArenaMenu(interaction.user.id),ephemeral=True)
+
+class ArenaMenu(OwnedView):
+    @discord.ui.button(label='Enter Arena',emoji='⚔️',style=discord.ButtonStyle.primary,row=0)
+    async def enter(self,i,b): await ARENA_COMMAND.callback(i)
+    @discord.ui.button(label='My Arena Score',emoji='🎯',style=discord.ButtonStyle.secondary,row=0)
+    async def score(self,i,b): await ARENA_SCORE_COMMAND.callback(i)
+    @discord.ui.button(label='Castle Gate',emoji='🏰',style=discord.ButtonStyle.secondary,row=1)
+    async def back(self,i,b): await open_castle(i)
 
 ARENA_COMMAND=bot.tree.get_command('arena')
 ARENA_SCORE_COMMAND=bot.tree.get_command('arena-score')
