@@ -96,7 +96,66 @@ CREATE TABLE IF NOT EXISTS raid_participation (
  PRIMARY KEY(user_id,day)
 );
 ''')
+conn.executescript("""
+CREATE TABLE IF NOT EXISTS daily_missions (
+ user_id INTEGER NOT NULL, day INTEGER NOT NULL, mission TEXT NOT NULL,
+ progress INTEGER NOT NULL DEFAULT 0, claimed INTEGER NOT NULL DEFAULT 0,
+ PRIMARY KEY(user_id,day,mission));
+CREATE TABLE IF NOT EXISTS daily_bonuses (
+ user_id INTEGER NOT NULL, day INTEGER NOT NULL, claimed INTEGER NOT NULL DEFAULT 0,
+ PRIMARY KEY(user_id,day));
+CREATE TABLE IF NOT EXISTS equipment_inventory (
+ user_id INTEGER NOT NULL, item TEXT NOT NULL, acquired_floor INTEGER NOT NULL,
+ PRIMARY KEY(user_id,item));
+""")
+for col in ('equipped_weapon','equipped_armor'):
+    if col not in {r[1] for r in conn.execute('PRAGMA table_info(players)')}:
+        conn.execute(f"ALTER TABLE players ADD COLUMN {col} TEXT NOT NULL DEFAULT 'None'")
 conn.commit()
+
+# Named, guaranteed milestones mean no player needs lucky drops to stay competitive.
+COLLECTIBLES = {
+ 'Rustguard Blade': ('weapon', 5, 0.008, 0),
+ 'Squire Mail': ('armor', 10, 0, 0.010),
+ 'Warden Longsword': ('weapon', 20, 0.012, 0),
+ 'Cryptguard Plate': ('armor', 30, 0, 0.015),
+ 'Emberbrand': ('weapon', 40, 0.016, 0),
+ 'Frostbound Mail': ('armor', 50, 0, 0.020),
+ 'Stormforged Blade': ('weapon', 60, 0.020, 0),
+ 'Royal Vanguard Plate': ('armor', 70, 0, 0.025),
+ 'Voidsteel Greatsword': ('weapon', 80, 0.024, 0),
+ "Dragon King's Aegis": ('armor', 90, 0, 0.030),
+ 'Crownslayer': ('weapon', 100, 0.028, 0),
+}
+MISSION_TYPES = {
+ 'dungeon': ('Defeat 5 dungeon enemies', 5, 250, 3),
+ 'gather': ('Complete 3 activities', 3, 180, 5),
+ 'raid': ('Perform 2 World Raid attacks', 2, 200, 4),
+}
+KINGDOM_EVENTS = (
+ ('The King’s Generosity', 'Dungeon first-clear gold +10%', 'gold'),
+ ('Harvest of Iron', 'Activity materials +1', 'materials'),
+ ('Royal Training', 'Dungeon first-clear gold +10%', 'gold'),
+ ('The Miners’ Feast', 'Activity gold +10%', 'activity_gold'),
+ ('The Smiths’ Festival', 'Activity materials +1', 'materials'),
+ ('Victory Procession', 'Dungeon first-clear gold +10%', 'gold'),
+ ('The Final Muster', 'Activity gold +10%', 'activity_gold'),
+)
+def kingdom_event():
+    day=event_day()
+    return KINGDOM_EVENTS[(day-1)%7] if 1<=day<=7 else ('No active event','The tournament is not active','none')
+
+def mission_progress(uid, kind, amount=1):
+    day=event_day()
+    if not 1<=day<=DAYS:return
+    conn.execute('INSERT INTO daily_missions(user_id,day,mission,progress) VALUES(?,?,?,?) ON CONFLICT(user_id,day,mission) DO UPDATE SET progress=progress+excluded.progress',(uid,day,kind,amount))
+
+def collectible_unlock(uid, floor):
+    for name,(_,milestone,_,_) in COLLECTIBLES.items():
+        if floor==milestone:
+            conn.execute('INSERT OR IGNORE INTO equipment_inventory(user_id,item,acquired_floor) VALUES(?,?,?)',(uid,name,floor))
+            return name
+    return None
 
 intents = discord.Intents.default()
 bot = commands.Bot(command_prefix='!', intents=intents)
@@ -182,7 +241,7 @@ def stats(p):
     hp+=p['armor_advanced']*10
     defense+=p['armor_advanced']*4
     atk+=p['weapon_advanced']*8
-    if p['skill']=='Berserker': atk=round(atk*1.15);hp=round(hp*1.10)
+    if p['skill']=='Berserker': atk=round(atk*1.15);hp=round(hp*1.21)
     elif p['skill']=='Guardian': defense=round(defense*1.05);atk=round(atk*1.02)
     elif p['skill']=='Arcanist': energy+=20;atk=round(atk*1.05);hp=round(hp*1.05)
     hp=round(hp*(1+min(p['relics'],10)*.005))
@@ -192,6 +251,10 @@ def stats(p):
         if p['blessing']=='supplies': hp=round(hp*1.05)
         elif p['blessing']=='knight': defense=round(defense*1.08)
         elif p['blessing']=='berserker': atk=round(atk*1.08)
+    weapon_item=COLLECTIBLES.get(p['equipped_weapon'])
+    armor_item=COLLECTIBLES.get(p['equipped_armor'])
+    if weapon_item and weapon_item[0]=='weapon':atk=round(atk*(1+weapon_item[2]))
+    if armor_item and armor_item[0]=='armor':hp=round(hp*(1+armor_item[3]))
     return hp,atk,defense,speed,energy
 
 def enemy_stats(floor):
@@ -211,7 +274,10 @@ def enemy_stats(floor):
         attack=round(attack*(.98+.003*tier))
         hp=round(hp*(1.18 if 20<=floor<=80 else (1.05 if floor==90 else .90)))
         attack=round(attack*(1.09 if 20<=floor<=80 else (.99 if floor==90 else .84)))
-    hp=round(hp*1.07)  # v9: modest HP pressure, tested against 7-day activity schedules
+    hp=round(hp*1.07)  # original HP pressure
+    # v17: progressively tougher late-game encounters, without an early-floor difficulty spike.
+    # The additional HP reaches 8.5% at Floor 100; enemy attack remains unchanged.
+    hp=round(hp*(1+0.085*max(0,min(1,(floor-40)/60))))
     return hp,attack,defense,boss
 
 def reward_for_floor(floor):
@@ -283,6 +349,7 @@ def info_embed(p):
     e.add_field(name='Combat stats', value=f'❤️ {hp} HP\n⚔️ {atk} ATK\n🛡️ {defense} DEF\n⚡ {speed} SPD\n🔮 {energy} Energy')
     e.add_field(name='Equipment', value=f'{p["weapon"]} • Stage {p["weapon_stage"]+1} • +{p["weapon_upgrade"]} (Advanced +{p["weapon_advanced"]})\nArmour +{p["armor_upgrade"]} (Advanced +{p["armor_advanced"]})')
     e.add_field(name='Progress', value=f'⭐ {free_points(p)} unspent stat points\n🪙 {p["gold"]} gold\n🔩 {p["materials"]} materials\n🎟️ {p["attempts"]} attempts\n⛏️ {p["stamina"]}/45 activity stamina\n🕒 {stamina_next_regen(p)}\n🌳 {p["skill"]} • 🔮 {p["enchantment"]} • 🏅 {p["relics"]} relics')
+    e.add_field(name='Royal Armoury',value=f'🗡️ {p["equipped_weapon"]} • 🛡️ {p["equipped_armor"]}',inline=False)
     e.set_footer(text=f'Day {max(0,min(DAYS,event_day()))}/{DAYS} • Solo tournament • UTC')
     return e
 
@@ -562,10 +629,14 @@ async def resolve_action(interaction, action):
         if won:
             floor = b['floor']
             gold, mats = reward_for_floor(floor)
+            if kingdom_event()[2]=='gold':gold=round(gold*1.10)
+            mission_progress(interaction.user.id,'dungeon')
+            newly_found=collectible_unlock(interaction.user.id,floor)
             respec = 1 if boss else 0
             conn.execute('UPDATE players SET floor=?,gold=gold+?,materials=materials+?,total_turns=total_turns+?,respecs=respecs+? WHERE user_id=?', (floor,gold,mats,b['turn'],respec,interaction.user.id))
             conn.execute('DELETE FROM battles WHERE user_id=?',(interaction.user.id,))
             notes.append(f'🏆 **VICTORY!** Floor {floor} cleared. +{gold} gold, +{mats} materials, +3 stat points.' + (' 🎁 Boss chest included! +1 respec token.' if boss else ''))
+            if newly_found: notes.append(f'🗡️ **New collectible unlocked:** {newly_found}! Equip it from My Fighter → Equipment.')
             if floor in (20,40,60,80):
                 conn.execute('UPDATE players SET weapon_stage=weapon_stage+1 WHERE user_id=?',(interaction.user.id,))
                 notes.append('✨ Weapon evolved! Your +upgrade level has been preserved.')
@@ -773,6 +844,9 @@ async def activities(interaction:discord.Interaction,activity:app_commands.Choic
         p=grant_stamina(interaction.user.id)
         if p['stamina']<1:return await ui_reply(interaction, f'No activity stamina left. You gain 15 at 00:00 UTC daily and +1 every 2 hours (maximum 45). {stamina_next_regen(p)}.',ephemeral=True)
         gold,mats={'mine':(80,0),'crystal':(0,2),'ruins':(110,2)}[activity.value]
+        if kingdom_event()[2]=='materials':mats+=1
+        if kingdom_event()[2]=='activity_gold':gold=round(gold*1.10)
+        mission_progress(interaction.user.id,'gather')
         conn.execute('UPDATE players SET stamina=stamina-1,gold=gold+?,materials=materials+? WHERE user_id=?',(gold,mats,interaction.user.id))
         conn.commit()
         remaining=p['stamina']-1
@@ -1104,6 +1178,8 @@ async def raid_attack(interaction,action):
         damage=min(raid['hp'],650 if correct else 400)
         conn.execute('UPDATE world_raids SET hp=MAX(0,hp-?) WHERE day=?',(damage,day))
         conn.execute('UPDATE raid_participation SET attempts=attempts+1,damage=damage+? WHERE user_id=? AND day=?',(damage,uid,day))
+        mission_progress(uid,'raid')
+        mission_progress(uid,'raid')
         conn.execute('UPDATE players SET gold=gold+100,materials=materials+1 WHERE user_id=?',(uid,))
         conn.commit()
         left=raid['hp']-damage
@@ -1126,7 +1202,7 @@ async def raid_claim(interaction):
 # Player-facing interface: /play is the sole slash command. Existing command
 # callbacks remain as internal handlers, preserving the same game rules.
 
-def castle_embed(title='THE KINGDOM\'S GATE', detail='Enter the dungeon, manage your fighter, visit the blacksmith or explore the kingdom.'):
+def castle_embed(title='THE KINGDOM\'S GATE', detail='Enter the dungeon, manage your fighter, explore the kingdom or read the guide.'):
     e=discord.Embed(title=f'🏰 DUNGEON KOMBAT | {title}',description=detail,color=discord.Color.from_rgb(111,74,43))
     e.set_image(url='attachment://dungeon-panel.png')
     return e
@@ -1228,9 +1304,11 @@ class FighterMenu(OwnedView):
     async def customize_button(self,i,b): await customize.callback(i)
     @discord.ui.button(label='Choose Skill',emoji='🌳',style=discord.ButtonStyle.secondary,row=1)
     async def skill_button(self,i,b): await open_actions(i,'skill')
-    @discord.ui.button(label='Reset Stats',emoji='🔄',style=discord.ButtonStyle.primary,row=2)
+    @discord.ui.button(label='Equipment Collection',emoji='🗡️',style=discord.ButtonStyle.secondary,row=2)
+    async def equipment(self,i,b):await equipment_menu(i)
+    @discord.ui.button(label='Reset Stats',emoji='🔄',style=discord.ButtonStyle.primary,row=3)
     async def respec_button(self,i,b): await ui_reply(i, 'Spend one respec token and refund all allocated points?',view=ConfirmRespec(self.uid),ephemeral=True)
-    @discord.ui.button(label='Castle Gate',emoji='🏰',style=discord.ButtonStyle.secondary,row=3)
+    @discord.ui.button(label='Castle Gate',emoji='🏰',style=discord.ButtonStyle.secondary,row=4)
     async def back(self,i,b): await open_castle(i)
 
 class ConfirmRespec(OwnedView):
@@ -1270,43 +1348,128 @@ async def open_actions(i,kind):
     }
     await ui_reply(i, embed=discord.Embed(title='📜 '+kind.title(),description=descriptions[kind],color=discord.Color.from_rgb(124,89,50)),view=ActionsView(i.user.id,kind),ephemeral=True)
 
+class EquipmentSelect(discord.ui.Select):
+    def __init__(self,uid,slot,items):
+        super().__init__(placeholder='Equip '+slot,options=[discord.SelectOption(label='None',value='None')]+[discord.SelectOption(label=x,value=x) for x in items[:24]],row=0)
+        self.uid=uid;self.slot=slot
+    async def callback(self,i):
+        if i.user.id!=self.uid:return await ui_reply(i,'This inventory belongs to another fighter.',ephemeral=True)
+        async with lock:
+            item=self.values[0]
+            if item!='None':
+                owned=conn.execute('SELECT 1 FROM equipment_inventory WHERE user_id=? AND item=?',(self.uid,item)).fetchone()
+                if not owned or COLLECTIBLES[item][0]!=self.slot:return await ui_reply(i,'Item not owned.',ephemeral=True)
+            column='equipped_weapon' if self.slot=='weapon' else 'equipped_armor'
+            conn.execute(f'UPDATE players SET {column}=? WHERE user_id=?',(item,self.uid));conn.commit()
+        await equipment_menu(i)
+
+class EquipmentMenu(OwnedView):
+    def __init__(self,uid):
+        super().__init__(uid)
+        items=[r['item'] for r in conn.execute('SELECT item FROM equipment_inventory WHERE user_id=? ORDER BY acquired_floor',(uid,))]
+        for row,slot in enumerate(('weapon','armor')):
+            owned=[x for x in items if COLLECTIBLES[x][0]==slot]
+            selector=EquipmentSelect(uid,slot,owned);selector.row=row;self.add_item(selector)
+        self.add_item(BackToCastle(row=2))
+
+async def equipment_menu(i):
+    p=get_player(i.user.id)
+    if p:
+        for name,(_,milestone,_,_) in COLLECTIBLES.items():
+            if p['floor']>=milestone:conn.execute('INSERT OR IGNORE INTO equipment_inventory(user_id,item,acquired_floor) VALUES(?,?,?)',(i.user.id,name,milestone))
+        conn.commit()
+    if p:
+        for name,(_,milestone,_,_) in COLLECTIBLES.items():
+            if p['floor']>=milestone:conn.execute('INSERT OR IGNORE INTO equipment_inventory(user_id,item,acquired_floor) VALUES(?,?,?)',(i.user.id,name,milestone))
+        conn.commit()
+    if not p:return await ui_reply(i,'Create a fighter first.')
+    items=[r['item'] for r in conn.execute('SELECT item FROM equipment_inventory WHERE user_id=? ORDER BY acquired_floor',(i.user.id,))]
+    e=discord.Embed(title='⚔️ The Royal Armoury',description='Collect a guaranteed weapon or armour piece at each listed milestone. Each piece is permanent and can be equipped or swapped without resetting your upgrades. Your original weapon class and special move are unchanged.',color=discord.Color.from_rgb(111,74,43))
+    e.add_field(name='Equipped',value=f'🗡️ {p["equipped_weapon"]}\n🛡️ {p["equipped_armor"]}',inline=False)
+    e.add_field(name=f'Collection ({len(items)}/{len(COLLECTIBLES)})',value='\n'.join(f'• {x} (Floor {COLLECTIBLES[x][1]})' for x in items) or 'No collectibles yet. Clear Floor 5 to earn your first weapon.',inline=False)
+    await ui_reply(i,embed=e,view=EquipmentMenu(i.user.id),ephemeral=True)
+
+class MissionView(OwnedView):
+    @discord.ui.button(label='Claim Completed Missions',emoji='📜',style=discord.ButtonStyle.primary,row=0)
+    async def claim(self,i,b):
+        async with lock:
+            day=event_day();claimed=[];gold=mats=0
+            for kind,(desc,goal,g,m) in MISSION_TYPES.items():
+                row=conn.execute('SELECT progress,claimed FROM daily_missions WHERE user_id=? AND day=? AND mission=?',(self.uid,day,kind)).fetchone()
+                if row and row['progress']>=goal and not row['claimed']:
+                    conn.execute('UPDATE daily_missions SET claimed=1 WHERE user_id=? AND day=? AND mission=?',(self.uid,day,kind))
+                    gold+=g;mats+=m;claimed.append(kind)
+            if gold or mats:conn.execute('UPDATE players SET gold=gold+?,materials=materials+? WHERE user_id=?',(gold,mats,self.uid))
+            conn.commit()
+        await mission_menu(i,notice=f'Claimed {len(claimed)} mission(s): +{gold} gold and +{mats} materials.')
+    @discord.ui.button(label='Claim Daily Completion Bonus',emoji='🎁',style=discord.ButtonStyle.secondary,row=0)
+    async def bonus(self,i,b):
+        async with lock:
+            day=event_day()
+            if not 1<=day<=DAYS:return await ui_reply(i,'The event is not active.')
+            done=all((r:=conn.execute('SELECT claimed FROM daily_missions WHERE user_id=? AND day=? AND mission=?',(self.uid,day,k)).fetchone()) and r['claimed'] for k in MISSION_TYPES)
+            if not done:return await ui_reply(i,'Claim all three daily missions first.')
+            cur=conn.execute('INSERT OR IGNORE INTO daily_bonuses(user_id,day,claimed) VALUES(?,?,1)',(self.uid,day))
+            if cur.rowcount:
+                conn.execute('UPDATE players SET gold=gold+500,materials=materials+10 WHERE user_id=?',(self.uid,));notice='Daily completion bonus: +500 gold and +10 materials!'
+            else:notice='You already claimed today’s bonus.'
+            conn.commit()
+        await mission_menu(i,notice=notice)
+    @discord.ui.button(label='Castle Gate',emoji='🏰',style=discord.ButtonStyle.secondary,row=1)
+    async def back(self,i,b):await open_castle(i)
+
+async def mission_menu(i,notice=None):
+    day=event_day();event_name,event_desc,_=kingdom_event()
+    e=discord.Embed(title='📜 Royal Bounty Board',description=(notice+'\n\n' if notice else '')+f'**Day {day}** • Daily reset at 00:00 UTC\n**Kingdom Event:** {event_name} — {event_desc}',color=discord.Color.from_rgb(111,74,43))
+    for kind,(desc,goal,g,m) in MISSION_TYPES.items():
+        row=conn.execute('SELECT progress,claimed FROM daily_missions WHERE user_id=? AND day=? AND mission=?',(i.user.id,day,kind)).fetchone()
+        progress=row['progress'] if row else 0
+        e.add_field(name=desc,value=f'{min(progress,goal)}/{goal} • +{g} gold, +{m} materials • '+('Claimed' if row and row['claimed'] else 'Ready to claim' if progress>=goal else 'In progress'),inline=False)
+    e.set_footer(text='Complete and claim all 3 missions for 500 extra gold + 10 materials. No Arena score effects.')
+    await ui_reply(i,embed=e,view=MissionView(i.user.id),ephemeral=True)
+
+class KingdomEventsView(OwnedView):
+    @discord.ui.button(label='Castle Gate',emoji='🏰',style=discord.ButtonStyle.secondary)
+    async def back(self,i,b):await open_castle(i)
+async def kingdom_events_menu(i):
+    name,description,_=kingdom_event()
+    e=discord.Embed(title='👑 Royal Kingdom Events',description=f'**Today:** {name}\n{description}\n\nOne event applies to everyone, rotating at 00:00 UTC. These bonuses affect dungeon progression only, not Championship Arena scores.',color=discord.Color.from_rgb(111,74,43))
+    await ui_reply(i,embed=e,view=KingdomEventsView(i.user.id),ephemeral=True)
+
 class KingdomMenu(OwnedView):
-    """Secondary destinations: keep the Castle Gate uncluttered."""
-    @discord.ui.button(label='Gather Resources',emoji='⛏️',style=discord.ButtonStyle.secondary,row=0)
-    async def gather(self,i,b):
-        await ui_reply(i,embed=discord.Embed(title='⛏️ Kingdom Outskirts',description='Gather materials or check your stamina.',color=discord.Color.from_rgb(124,89,50)),view=GatherMenu(self.uid),ephemeral=True)
-    @discord.ui.button(label='World Raid',emoji='🐉',style=discord.ButtonStyle.secondary,row=0)
-    async def raid(self,i,b): await raid_menu(i)
-    @discord.ui.button(label='Merchant',emoji='🪙',style=discord.ButtonStyle.secondary,row=1)
-    async def merchant(self,i,b): await merchant_menu(i)
-    @discord.ui.button(label='Treasury',emoji='💰',style=discord.ButtonStyle.secondary,row=1)
-    async def treasury(self,i,b): await wallet.callback(i)
-    @discord.ui.button(label='Rankings',emoji='🏆',style=discord.ButtonStyle.secondary,row=2)
-    async def rankings(self,i,b): await leaderboard.callback(i)
-    @discord.ui.button(label='Rules & Dates',emoji='📜',style=discord.ButtonStyle.secondary,row=2)
-    async def rules(self,i,b): await event.callback(i)
-    @discord.ui.button(label='Castle Gate',emoji='🏰',style=discord.ButtonStyle.secondary,row=3)
-    async def back(self,i,b): await open_castle(i)
+    @discord.ui.button(label='Blacksmith',emoji='🔨',style=discord.ButtonStyle.secondary,row=0)
+    async def forge(self,i,b):await ui_reply(i,embed=discord.Embed(title='🔨 Royal Blacksmith',description='Upgrade and enchant your equipment.',color=discord.Color.from_rgb(124,89,50)),view=ForgeMenu(self.uid),ephemeral=True)
+    @discord.ui.button(label='Activities',emoji='⛏️',style=discord.ButtonStyle.secondary,row=0)
+    async def gather(self,i,b):await ui_reply(i,embed=discord.Embed(title='⛏️ Kingdom Activities',description='Gather materials or check stamina.',color=discord.Color.from_rgb(124,89,50)),view=GatherMenu(self.uid),ephemeral=True)
+    @discord.ui.button(label='Daily Missions',emoji='📜',style=discord.ButtonStyle.secondary,row=1)
+    async def missions(self,i,b):await mission_menu(i)
+    @discord.ui.button(label='Kingdom Events',emoji='👑',style=discord.ButtonStyle.secondary,row=1)
+    async def events(self,i,b):await kingdom_events_menu(i)
+    @discord.ui.button(label='World Raid',emoji='🐉',style=discord.ButtonStyle.secondary,row=2)
+    async def raid(self,i,b):await raid_menu(i)
+    @discord.ui.button(label='Merchant',emoji='🪙',style=discord.ButtonStyle.secondary,row=2)
+    async def merchant(self,i,b):await merchant_menu(i)
+    @discord.ui.button(label='Treasury',emoji='💰',style=discord.ButtonStyle.secondary,row=3)
+    async def treasury(self,i,b):await wallet.callback(i)
+    @discord.ui.button(label='Rankings',emoji='🏆',style=discord.ButtonStyle.secondary,row=3)
+    async def rankings(self,i,b):await leaderboard.callback(i)
+    @discord.ui.button(label='Castle Gate',emoji='🏰',style=discord.ButtonStyle.secondary,row=4)
+    async def back(self,i,b):await open_castle(i)
 
 class PlayMenu(OwnedView):
-    """Four core destinations, with a fifth unlocked after floor 100."""
+    """Four core destinations, Arena appears only after Floor 100."""
     def __init__(self,uid):
         super().__init__(uid)
         player=get_player(uid)
-        if player and player['floor'] >= 100:
-            self.add_item(ArenaEntryButton())
-
+        if player and player['floor']>=100:self.add_item(ArenaEntryButton())
     @discord.ui.button(label='Enter Dungeon',emoji='⚔️',style=discord.ButtonStyle.primary,row=0)
-    async def enter(self,i,b): await dungeon.callback(i)
+    async def enter(self,i,b):await dungeon.callback(i)
     @discord.ui.button(label='My Fighter',emoji='🛡️',style=discord.ButtonStyle.secondary,row=0)
-    async def hero(self,i,b):
-        await ui_reply(i,embed=discord.Embed(title='🛡️ Fighter Hall',description='Manage your character, stats, specialization and appearance.',color=discord.Color.from_rgb(124,89,50)),view=FighterMenu(self.uid),ephemeral=True)
-    @discord.ui.button(label='Blacksmith',emoji='🔨',style=discord.ButtonStyle.secondary,row=1)
-    async def forge(self,i,b):
-        await ui_reply(i,embed=discord.Embed(title='🔨 Royal Blacksmith',description='Upgrade and enchant your equipment.',color=discord.Color.from_rgb(124,89,50)),view=ForgeMenu(self.uid),ephemeral=True)
+    async def hero(self,i,b):await ui_reply(i,embed=discord.Embed(title='🛡️ Fighter Hall',description='Manage your character, stats, equipment and appearance.',color=discord.Color.from_rgb(124,89,50)),view=FighterMenu(self.uid),ephemeral=True)
     @discord.ui.button(label='Kingdom',emoji='🏰',style=discord.ButtonStyle.secondary,row=1)
-    async def kingdom(self,i,b):
-        await ui_reply(i,embed=discord.Embed(title='🏰 Explore the Kingdom',description='Gather resources, join the world raid, visit the merchant, or view rankings and rules.',color=discord.Color.from_rgb(124,89,50)),view=KingdomMenu(self.uid),ephemeral=True)
+    async def kingdom(self,i,b):await ui_reply(i,embed=discord.Embed(title='🏰 Explore the Kingdom',description='Blacksmith, Activities, Daily Missions, Kingdom Events, World Raid, Merchant, Treasury and Rankings.',color=discord.Color.from_rgb(124,89,50)),view=KingdomMenu(self.uid),ephemeral=True)
+    @discord.ui.button(label='Rules & Guide',emoji='📜',style=discord.ButtonStyle.secondary,row=1)
+    async def rules(self,i,b):await event.callback(i)
 
 class ArenaEntryButton(discord.ui.Button):
     def __init__(self):

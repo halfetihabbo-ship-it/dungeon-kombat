@@ -1,81 +1,63 @@
-# Dungeon Kombat v13 — The Kingdom Awakens
+# Dungeon Kombat v16 — Royal Bounties & Armoury
 
-Medieval 100-floor Discord RPG. **Only player-facing slash command: `/play`**. The existing v12 player database, equipment, battle progress and Championship Arena results are retained using additive SQLite migrations.
+Medieval-themed, seven-day, 100-floor Discord dungeon tournament. **One player-facing command: `/play`**. A host posts the shared entrance once; players use the persistent public entrance to open private panels. New fighter creation goes directly to the Castle Gate.
 
-## New in v13
+## Navigation
 
-- **Three Doors** after boss floors 10–90: Iron (three-turn tactical elite encounter; win 2/3 counters for bonus), Golden (guaranteed gold and materials), Runic (three-floor defence blessing), or safely skip. Door decisions are stored once per player/floor.
-- **Treasure Chambers** after floors 5, 15, 25 ... 95: choose 350 gold, 8 materials or a three-floor +5% HP blessing. One claim per player/floor, never rerollable.
-- **Enemy Intentions**: enemy attack intent is shown before every combat action. Heavy, guarding, reckless, venom, charging and normal moves have different tactical responses. The same deterministic intent is used for damage resolution and display.
-- **Boss Phases**: each boss has three HP phases (>60%, 60–25%, <=25%), with increasingly aggressive patterns, more tactical openings, and named medieval bosses.
-- **World Boss Raids**: one asynchronous raid per event day, with 3 tactical attempts per player/day. Players respond to telegraphed enemy moves using Strike/Guard/Pierce. Standardized raid damage (650 correct counter, 400 otherwise), no dungeon build advantage. Each attempt awards 100 gold and 1 material; participants can claim a one-time 350 gold and 5 material bonus if their server defeats the boss that day. Raid HP is 20,000 (best suited to roughly 11+ active players; adjustable in code).
-- **Wandering Merchant**: accessible through `/play` after boss floors 10–90, with gold-purchased materials and three-floor temporary blessings. Each item can be purchased once at each merchant floor.
-- **Medieval visual design**: existing procedurally drawn stonework, heraldic banners, torches and parchment, plus a new raid panel. All generated locally without remote assets.
+- Castle Gate: Enter Dungeon, My Fighter, Kingdom, Rules & Guide. Championship Arena appears only after clearing Floor 100 and eligibility is checked server-side.
+- Kingdom: Blacksmith, Activities, Daily Missions, Kingdom Events, World Raid, Merchant, Treasury, Rankings, Castle Gate.
+- My Fighter: Equipment Collection (two equipment selectors), View Fighter, Allocate Stats, Appearance & Weapon, Choose Skill, Reset Stats.
 
-## Player navigation
+## New systems
 
-`/play` -> Castle Gate -> Enter Dungeon / My Fighter / Blacksmith / Gather Resources / Treasury / Championship Arena / Rankings / Arena Score / Rules & Dates / World Raid / Wandering Merchant / Create Fighter.
+**Daily Missions**: 5 dungeon victories, 3 gathering activities, 2 raid attacks. Claim 250 gold + 3 materials, 180 gold + 5 materials, and 200 gold + 4 materials respectively. Claim all three for an additional 500 gold + 10 materials. Progress and claims persist in SQLite and reset each UTC day. Rewards are claimed manually in Kingdom > Daily Missions. The mission is awarded only for a valid completed activity/battle/raid.
 
-On a victory, **Next Floor** routes the player through any unclaimed Three Doors or Treasure Chamber encounter before the next fight. **Exit Dungeon** preserves progress. Pending elite trials resume on the next dungeon entry. No new slash commands are required.
+**Kingdom Events**: Seven fixed UTC daily modifiers: 10% first-clear gold on days 1, 3 and 6; +1 material per gathering action on days 2 and 5; +10% activity gold on days 4 and 7. Shown under Kingdom > Kingdom Events and on the Bounty Board. No Arena effects.
 
-## Railway deployment
+**Collectible equipment**: 11 named permanent milestone pieces, guaranteed at floors 5, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100. Six collectible weapons and five armours. Equip in My Fighter > Equipment Collection. Collectible weapons provide +0.8% to +2.8% attack; armour +1% to +3% HP. Equipment does **not** replace the base weapon class, remove upgrades, or affect Arena. Previously completed milestones are backfilled when opening the collection. No trading or random loot drops in this version.
 
-1. Extract the ZIP. Upload **the files themselves**, not the enclosing folder, to the GitHub repository root.
-2. In Railway, deploy from GitHub with the root directory `/` (or blank if using repository root).
-3. Set variables: `DISCORD_TOKEN` (secret), `GUILD_ID=1557502185615397005`, `EVENT_START_DATE=2026-11-14` (or the date you want to start, in UTC), and `DATABASE_PATH=/data/dungeon_kombat.db`.
-4. Attach a persistent Railway volume mounted at `/data`. Start command: `python main.py`.
-5. Redeploy, wait for command synchronization, then use `/play`.
+**Preserved**: 100 floors, medieval artwork, enemy intentions, boss phases, Three Doors, treasure rooms, wandering merchant, daily world raids, original weapon classes, basic/advanced forging, persistent shared entrance and standardized Championship Arena.
 
-**Note:** The game counts event days from UTC midnight, not the exact deploy time. Keep the existing volume to preserve player progress. If the original event has already started, updating the ZIP does not restart its timer.
+## Deploy to Railway
 
-## Fairness and limits
+1. Upload files from the ZIP **at the root of your GitHub repository** (do not upload an enclosing folder).
+2. Deploy the repository on Railway, Root Directory `/` (or blank).
+3. Variables: `DISCORD_TOKEN` (secret), `GUILD_ID=1557502185615397005`, `EVENT_START_DATE=2026-11-14` (change to your intended event start date), `DATABASE_PATH=/data/dungeon_kombat.db`.
+4. Keep a persistent Railway volume mounted at `/data`. Start command `python main.py`.
+5. Redeploy and test the original public entrance panel or post `/play` once if needed. **Do not delete the existing volume**; SQLite migrations are additive. Updating does not restart the seven-day event clock.
 
-- Arena is unchanged and standardized; dungeon loot, temporary blessings, raid rewards and equipment do not affect its tactical scoring.
-- Door and chest claims, merchant purchases, and raid attempts are persisted and protected by a shared asyncio lock against double-click duplication.
-- Encounter rewards and merchant bonuses are intentionally modest, but the new combat patterns have not been calibrated by a full live seven-day Monte Carlo run. Test difficulty before launching a new competition.
-- Raid victory rewards can be claimed only on the day the raid is defeated.
+## Simulation
 
-## Verification
+`simulation/simulate_live.py` is a **simplified Monte Carlo** based on production `stats`, `enemy_stats`, `reward_for_floor`, `damage_reduction`, `advanced_cost`, and collectible definitions. `simulation/simulate_baseline.py` uses the v15 versions of those functions. Each tested 3 builds x 3 activity schedules x 180 seeds = **1,620 trials per version**. Summary and day-by-day CSVs included.
 
-Python syntax checks, source-level structural tests, ZIP integrity verification and SQLite schema smoke tests are included in the build process. **Live Discord interaction tests have not been run** in this environment. Test all six new features on Railway before announcing the update.
+Limitations: independent approximated combat AI, not actual Discord event interactions; it does not fully reproduce enemy intention/boss phase choices, Three Doors, treasure encounters, merchant decisions, world raid rewards, or exact claim timing. It approximates 1 dungeon and 1 gathering mission reward per active day and **excludes raid and full-completion mission bonuses**. Player schedules are assumptions; results are not live completion statistics.
 
-### v13.1 — Exit Dungeon navigation
-The **Exit Dungeon** button now edits the victory/defeat message into the full `/play` Castle Gate interface (including the medieval artwork and all menu buttons), instead of displaying a message instructing the player to run `/play` again. No dungeon attempt is spent by exiting.
+**Balance warning:** Updated dedicated and regular builds all cleared Floor 100 in 100% of modelled runs. This is easier than a target of ~80–90% dedicated completion. Casual clear rates were 100% balanced, 91.1% aggressive and 94.4% defensive. More difficulty calibration is recommended before launch; do not interpret these figures as proof the live game is balanced.
 
-## v14 — Shared Castle Entrance and one-panel player navigation
+## Testing
 
-Run `/play` **once** in the game channel to publish the shared Castle Entrance. The
-public **Enter the Kingdom** button is persistent across bot restarts. Each
-player clicking it gets a **private** menu, so players share one entry panel
-without seeing or interfering with each other's inventories and battles.
+- `python -m py_compile main.py arena.py visuals.py`
+- `python simulation/test_v16.py` (from within the simulation directory, the test expects `main.py` in the parent; use the included test command below)
+- `python simulation/simulate_live.py --runs 180`
 
-- New players see **Create Your Fighter**. Submitting the fighter-name modal
-  immediately replaces their registration panel with the full Castle Gate menu.
-- Existing players go directly to the Castle Gate.
-- Navigating the menus, dungeon, gathering, merchant and raids edits the current
-  private message instead of posting a fresh panel for every click.
-- Buttons follow a consistent scheme: action buttons use Discord blurple;
-  back/castle navigation uses neutral grey.
-- **Exit Dungeon** and **Castle Gate** in battle return to the main player menu;
-  in-progress battles and earned floor progress are preserved.
-- The Championship Arena has Next Challenge / Resume and Castle Gate buttons.
-- The public entrance button is registered as a persistent Discord component.
-  Personal ephemeral panels can expire after inactivity; players can click the
-  existing public entrance again without typing `/play`.
+Source syntax and SQLite schema smoke tests passed. **Discord interactions have not been tested live** in this environment. Verify missions, collection selectors, world raids, navigation and Arena on Railway before a public event.
 
-**Deployment:** Replace files in the GitHub repo root and redeploy Railway.
-Keep `DISCORD_TOKEN`, `GUILD_ID`, `EVENT_START_DATE`, `DATABASE_PATH` and the
-existing `/data` volume. No schema reset is required. The original event clock
-is not restarted by deploying v14.
+## v17 late-game difficulty adjustment (simulation-based)
 
-**Verification:** Python syntax checks pass; live Discord interaction testing
-is required before relying on this update for a public event.
+Enemy HP now scales gradually by an additional 0% at Floor 40 to 8.5% at Floor 100. Enemy attack is unchanged. This avoids a sudden boss-only spike and preserves early-game accessibility. No Arena combat/scoring rules were changed. The change is intentionally modest rather than forcing a target completion rate at the expense of aggressive or casual builds.
 
-## v15 — Clean Castle Gate and Arena qualification
+The `simulation/summary.csv` and `simulation/daily.csv` are the latest v17 results (180 seeds per build/schedule, 1,620 total trials). **Caution:** dedicated builds still reach Floor 100 in 100% of these simplified simulations. Casual aggressive completion falls from 91.1% to 28.3%, indicating that more targeted class-specific balancing is required before declaring this change fair. Test in a staging guild before production.
 
-- Main private Castle Gate now has **four** core buttons: Enter Dungeon, My Fighter, Blacksmith, Kingdom.
-- Kingdom submenu contains gathering, world raid, merchant, treasury, rankings, and rules.
-- **Championship Arena button appears only for players with `floor >= 100`**, and the callback rechecks qualification before opening an Arena submenu with Enter Arena and My Arena Score. Existing arena handlers retain their own qualification checks.
-- Shared public Enter the Kingdom button remains persistent; new fighter creation opens the main Castle Gate directly.
-- Existing SQLite database and Railway settings are preserved.
-- Live Discord interactions have not been tested.
+## v18: Seven-day participation balance
+- Berserker HP bonus increased from 10% to 15% to reduce its vulnerability to late-game encounters; attack bonus unchanged.
+- Existing 20 daily dungeon attempts, carryover, floor scaling, item milestones, missions, events and Championship Arena remain unchanged.
+- Simulation assumptions: dedicated players attempt 20 floors/day; regular players attempt 11–18 floors/day (randomly); casual players attempt 6–10 floors/day. These are **player-behaviour assumptions**, not hardcoded gameplay restrictions.
+- `simulation/summary.csv` has 500 runs per build/activity combination (4,500 simulated seven-day campaigns). `median_finish_hours` is **elapsed time since event start**, not active play time. Completion times only include successful runs.
+- The simulator approximates combat and does not reproduce all boss phases, doors, merchant choices or raids. Treat the completion rates as directional, not a prediction of live server behaviour.
+
+## v19 Berserker balance adjustment
+- Berserker specialization: +15% attack, **+21% HP** (formerly +15% HP).
+- No changes to other fighter specializations, enemy difficulty, event duration or Championship Arena.
+- `simulation/simulate_live.py --runs 500` generated 4,500 simulated seven-day campaigns. See `simulation/summary.csv` and `simulation/daily.csv`.
+- Completion (dedicated/regular/casual): balanced 100/59.8/0%; aggressive 100/63.0/0%; defensive 100/58.6/0%.
+- Simulator approximates combat decisions; live Discord combat and boss mechanics remain to be tested.
