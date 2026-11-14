@@ -41,7 +41,7 @@ POINTS = {
 }
 
 
-def install(bot, conn, lock, get_player, event_day):
+def install(bot, conn, lock, get_player, event_day, open_castle):
     conn.executescript('''
     CREATE TABLE IF NOT EXISTS arena_runs (
       user_id INTEGER NOT NULL, challenge INTEGER NOT NULL,
@@ -133,6 +133,24 @@ def install(bot, conn, lock, get_player, event_day):
         e.set_footer(text='Individual randomised encounters • equal maximum 500 points')
         return e
 
+    async def ui_reply(interaction, content=None, *, embed=None, file=None, view=None, ephemeral=True):
+        payload={'content':content}
+        if embed is not None:payload['embed']=embed
+        if view is None:view=ArenaNavigation()
+        payload['view']=view
+        if interaction.type==discord.InteractionType.component:
+            payload['attachments']=[file] if file else []
+            return await interaction.response.edit_message(**payload)
+        if file is not None:payload['file']=file
+        return await interaction.response.send_message(**payload,ephemeral=True)
+
+    class ArenaNavigation(discord.ui.View):
+        def __init__(self):super().__init__(timeout=900)
+        @discord.ui.button(label='Next Challenge / Resume',emoji='⚔️',style=discord.ButtonStyle.primary)
+        async def next(self,i,b):await arena.callback(i)
+        @discord.ui.button(label='Castle Gate',emoji='🏰',style=discord.ButtonStyle.secondary)
+        async def castle(self,i,b):await open_castle(i)
+
     class ArenaView(discord.ui.View):
         def __init__(self, uid, challenge):
             super().__init__(timeout=900)
@@ -142,15 +160,15 @@ def install(bot, conn, lock, get_player, event_day):
                 button=discord.ui.Button(label=label,style=discord.ButtonStyle.primary if key in ('strike','pierce','burst') else discord.ButtonStyle.secondary)
                 async def callback(interaction, action=key):
                     if interaction.user.id != self.uid:
-                        return await interaction.response.send_message('This is another fighter’s arena encounter.',ephemeral=True)
+                        return await ui_reply(interaction, 'This is another fighter’s arena encounter.',ephemeral=True)
                     async with lock:
                         if not arena_open():
-                            return await interaction.response.send_message('The Championship Arena is closed.',ephemeral=True)
+                            return await ui_reply(interaction, 'The Championship Arena is closed.',ephemeral=True)
                         if not unlocked(self.uid):
-                            return await interaction.response.send_message('Clear Level 100 to qualify.',ephemeral=True)
+                            return await ui_reply(interaction, 'Clear Level 100 to qualify.',ephemeral=True)
                         row=conn.execute('SELECT turn,score,choices,scenario_seed FROM arena_runs WHERE user_id=? AND challenge=?',(self.uid,self.challenge)).fetchone()
                         if row is None or row['turn'] >= 4:
-                            return await interaction.response.send_message('This challenge is already complete or has not been started. Use `/play` → Championship Arena.',ephemeral=True)
+                            return await ui_reply(interaction, 'This challenge is already complete or has not been started. Use `/play` → Championship Arena.',ephemeral=True)
                         turn=row['turn']
                         cue,stance=scenario(row['scenario_seed'],self.challenge)[turn]
                         scores,optimal=round_rules(cue,stance)
@@ -161,7 +179,7 @@ def install(bot, conn, lock, get_player, event_day):
                         msg=f'{OPTIONS[action]}: **+{gained}/25 points**. '+('Perfect counter!' if action==optimal else 'The opponent resisted your approach.')
                         embed=encounter_embed(self.uid,self.challenge,msg)
                         done=turn+1==4
-                    await interaction.response.edit_message(embed=embed,attachments=[arena_file(self.challenge,turn+1)],view=None if done else ArenaView(self.uid,self.challenge))
+                    await interaction.response.edit_message(embed=embed,attachments=[arena_file(self.challenge,turn+1)],view=ArenaNavigation() if done else ArenaView(self.uid,self.challenge))
                 button.callback=callback
                 self.add_item(button)
 
@@ -169,13 +187,13 @@ def install(bot, conn, lock, get_player, event_day):
     async def arena(interaction:discord.Interaction):
         async with lock:
             if not unlocked(interaction.user.id):
-                return await interaction.response.send_message('🔒 Clear all 100 dungeon floors to qualify for the Championship Arena.',ephemeral=True)
+                return await ui_reply(interaction, '🔒 Clear all 100 dungeon floors to qualify for the Championship Arena.',ephemeral=True)
             r=runs(interaction.user.id)
             score,completed=total(interaction.user.id)
             if completed==5:
-                return await interaction.response.send_message(f'🏆 All five challenges complete! **Your final Arena score: {score}/500**. Check `/play` → Rankings.',ephemeral=True)
+                return await ui_reply(interaction, f'🏆 All five challenges complete! **Your final Arena score: {score}/500**. Check `/play` → Rankings.',ephemeral=True)
             if not arena_open():
-                return await interaction.response.send_message('The Championship Arena is open during event days 1–9 only.',ephemeral=True)
+                return await ui_reply(interaction, 'The Championship Arena is open during event days 1–9 only.',ephemeral=True)
             # Strict sequential progression; existing partially completed runs resume.
             challenge=next(i for i in range(5) if not any(x['challenge']==i and x['turn']==4 for x in r))
             if not any(x['challenge']==challenge for x in r):
@@ -183,12 +201,12 @@ def install(bot, conn, lock, get_player, event_day):
                 conn.commit()
             e=encounter_embed(interaction.user.id,challenge)
         row=conn.execute('SELECT turn FROM arena_runs WHERE user_id=? AND challenge=?',(interaction.user.id,challenge)).fetchone()
-        await interaction.response.send_message(embed=e,file=arena_file(challenge,row['turn']),view=ArenaView(interaction.user.id,challenge),ephemeral=True)
+        await ui_reply(interaction, embed=e,file=arena_file(challenge,row['turn']),view=ArenaView(interaction.user.id,challenge))
 
     @bot.tree.command(name='arena-score',description='Check your Championship Arena qualification and score')
     async def arena_score(interaction:discord.Interaction):
         if not unlocked(interaction.user.id):
-            return await interaction.response.send_message('You must clear Floor 100 to qualify.',ephemeral=True)
+            return await ui_reply(interaction, 'You must clear Floor 100 to qualify.',ephemeral=True)
         score,completed=total(interaction.user.id)
         e=discord.Embed(title='🏟️ Championship Arena Score',description=f'**{score}/500 points** • **{completed}/5** challenges complete',color=discord.Color.gold())
         r={x['challenge']:x for x in runs(interaction.user.id)}
@@ -196,6 +214,6 @@ def install(bot, conn, lock, get_player, event_day):
             x=r.get(i)
             e.add_field(name=f'{i+1}. {name}',value='Not started' if not x else f'{x["score"]}/100 • '+('Complete' if x['turn']==4 else f'{x["turn"]}/4 rounds'),inline=False)
         e.set_image(url="attachment://dungeon-panel.png")
-        await interaction.response.send_message(embed=e,file=panel_file("arena"),ephemeral=True)
+        await ui_reply(interaction, embed=e,file=panel_file("arena"))
 
     return {'total':total,'open':arena_open}

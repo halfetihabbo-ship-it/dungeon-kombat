@@ -21,7 +21,7 @@ from visuals import floor_file, panel_file
 TOKEN = os.getenv('DISCORD_TOKEN', '')
 GUILD_ID = os.getenv('GUILD_ID', '')
 DB_PATH = os.getenv('DATABASE_PATH', '/data/dungeon_kombat.db' if Path('/data').exists() else 'dungeon_kombat.db')
-START_DATE = os.getenv('EVENT_START_DATE', '2026-11-22')  # UTC, inclusive
+START_DATE = os.getenv('EVENT_START_DATE', '2026-11-14')  # UTC, inclusive
 DAYS = 7
 DAILY_ATTEMPTS = 20
 MAX_ATTEMPTS = 140
@@ -64,13 +64,38 @@ for table, fields in {
     'players': {'stamina_regen_at':'INTEGER NOT NULL DEFAULT 0','stamina':'INTEGER NOT NULL DEFAULT 0','stamina_days':'INTEGER NOT NULL DEFAULT 0',
         'skill':"TEXT NOT NULL DEFAULT 'None'",'relics':'INTEGER NOT NULL DEFAULT 0',
         'enchantment':"TEXT NOT NULL DEFAULT 'None'",'weapon_advanced':'INTEGER NOT NULL DEFAULT 0',
-        'armor_advanced':'INTEGER NOT NULL DEFAULT 0'},
+        'armor_advanced':'INTEGER NOT NULL DEFAULT 0', 'blessing':"TEXT NOT NULL DEFAULT 'None'",'blessing_floors':'INTEGER NOT NULL DEFAULT 0'},
     'battles': {'special_cd':'INTEGER NOT NULL DEFAULT 0'}
 }.items():
     existing={r[1] for r in conn.execute(f'PRAGMA table_info({table})')}
     for field,sqltype in fields.items():
         if field not in existing:
             conn.execute(f'ALTER TABLE {table} ADD COLUMN {field} {sqltype}')
+# v13: additive, idempotent world events. Existing players and battles are retained.
+conn.executescript('''
+CREATE TABLE IF NOT EXISTS dungeon_encounters (
+ user_id INTEGER NOT NULL, floor INTEGER NOT NULL, kind TEXT NOT NULL,
+ status TEXT NOT NULL DEFAULT 'pending', choice TEXT,
+ PRIMARY KEY(user_id,floor,kind)
+);
+CREATE TABLE IF NOT EXISTS elite_trials (
+ user_id INTEGER NOT NULL, floor INTEGER NOT NULL, turn INTEGER NOT NULL DEFAULT 0,
+ successes INTEGER NOT NULL DEFAULT 0, completed INTEGER NOT NULL DEFAULT 0,
+ PRIMARY KEY(user_id,floor)
+);
+CREATE TABLE IF NOT EXISTS merchant_purchases (
+ user_id INTEGER NOT NULL, floor INTEGER NOT NULL, item TEXT NOT NULL,
+ PRIMARY KEY(user_id,floor,item)
+);
+CREATE TABLE IF NOT EXISTS world_raids (
+ day INTEGER PRIMARY KEY, hp INTEGER NOT NULL, max_hp INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS raid_participation (
+ user_id INTEGER NOT NULL, day INTEGER NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
+ damage INTEGER NOT NULL DEFAULT 0, victory_claimed INTEGER NOT NULL DEFAULT 0,
+ PRIMARY KEY(user_id,day)
+);
+''')
 conn.commit()
 
 intents = discord.Intents.default()
@@ -163,6 +188,10 @@ def stats(p):
     hp=round(hp*(1+min(p['relics'],10)*.005))
     if p['enchantment']=='Flame': atk=round(atk*1.035)
     elif p['enchantment']=='Ward': hp=round(hp*1.045)
+    if p['blessing_floors']>0:
+        if p['blessing']=='supplies': hp=round(hp*1.05)
+        elif p['blessing']=='knight': defense=round(defense*1.08)
+        elif p['blessing']=='berserker': atk=round(atk*1.08)
     return hp,atk,defense,speed,energy
 
 def enemy_stats(floor):
@@ -194,6 +223,53 @@ def reward_for_floor(floor):
         gold += 350 + 60*band
         mats += 6 + band
     return gold, mats
+
+# Adventure encounters are first-clear only. No extra dungeon attempts are spent.
+def encounter_kind(floor):
+    if floor % 10 == 0 and floor < 100: return 'doors'
+    if floor % 5 == 0 and floor % 10 != 0: return 'treasure'
+    return None
+
+def pending_encounter(uid):
+    return conn.execute("SELECT * FROM dungeon_encounters WHERE user_id=? AND status='pending' ORDER BY floor LIMIT 1",(uid,)).fetchone()
+
+BOSS_NAMES=('The Fallen Knight','The Crypt Warden','The Iron Golem','The Plague Keeper',
+            'The Royal Executioner','The Frost Guardian','The Shadow Lord',
+            'The Infernal Beast','The Ancient Lich','The Dragon King')
+
+def boss_phase(b):
+    max_hp,_,_,boss=enemy_stats(b['floor'])
+    if not boss: return 0
+    ratio=b['enemy_hp']/max(1,max_hp)
+    return 1 if ratio>0.60 else 2 if ratio>0.25 else 3
+
+def enemy_intent(b):
+    """Telegraph is deterministic from persisted turn, floor and seed.
+    The same intent is used in the embed and in damage resolution.
+    """
+    if b['enemy_charge']: return 'charged'
+    phase=boss_phase(b)
+    rng=random.Random(b['seed']+b['turn']*397+phase*13)
+    options=['heavy','guard','reckless','normal']
+    if b['floor']>=11: options.append('venom')
+    if phase>=2: options+=['heavy','guard']
+    if phase==3: options+=['reckless','heavy']
+    return rng.choice(options)
+
+INTENT_TEXT={
+ 'charged':'The foe is charging a devastating blow. Defending is wise.',
+ 'heavy':'The foe raises its weapon for a HEAVY STRIKE. Defend to blunt it.',
+ 'guard':'The foe braces behind a shield. Focus or use a special attack.',
+ 'reckless':'The foe lunges recklessly, exposing a weak point. Attack now!',
+ 'venom':'The foe prepares a venomous strike. Defend to avoid poisoning.',
+ 'normal':'The foe watches your stance and prepares a standard strike.'}
+
+MERCHANT_ITEMS={
+ 'supplies':('Healer’s Supplies',250,0,'A three-battle blessing: +5% maximum HP.'),
+ 'forge':('Blacksmith’s Bundle',600,0,'Gain 8 materials.'),
+ 'knight':('Knight’s Blessing',450,0,'A three-battle blessing: +8% defence.'),
+ 'berserker':('Berserker’s Elixir',450,0,'A three-battle blessing: +8% attack.'),
+ 'relic':('Relic Fragments',1200,0,'Gain 5 materials and 300 gold back.')}
 
 def damage_reduction(defense):
     return max(.45, 100/(100+min(defense,75)*.65+max(0,defense-75)*.09))
@@ -258,19 +334,38 @@ def avatar_file(p):
     bio.seek(0)
     return discord.File(bio, filename='fighter.png')
 
+
+# Single-panel navigation: component interactions update their own ephemeral panel.
+# Slash-command entry points still create the initial message.
+async def ui_reply(interaction, content=None, *, embed=None, embeds=None, file=None, files=None, view=None, ephemeral=True, **kwargs):
+    payload = {'content': content}
+    if embed is not None: payload['embed'] = embed
+    if embeds is not None: payload['embeds'] = embeds
+    if view is None:
+        view = PlayMenu(interaction.user.id) if get_player(interaction.user.id) else RegistrationGate()
+    payload['view'] = view
+    attachments = list(files or [])
+    if file is not None: attachments.append(file)
+    if interaction.type in (discord.InteractionType.component, discord.InteractionType.modal_submit):
+        payload['attachments'] = attachments
+        return await interaction.response.edit_message(**payload)
+    if attachments:
+        payload['files'] = attachments
+    return await interaction.response.send_message(**payload, ephemeral=ephemeral, **kwargs)
+
 class CreateFighter(discord.ui.Modal, title='Create your fighter'):
     fighter_name = discord.ui.TextInput(label='Fighter name', max_length=24, min_length=2, placeholder='Shadow Reaper')
     async def on_submit(self, interaction: discord.Interaction):
         async with lock:
             if get_player(interaction.user.id):
-                return await interaction.response.send_message('You already have a fighter. Open `/play` and select My Fighter.', ephemeral=True)
+                return await ui_reply(interaction, 'You already have a fighter. Open `/play` and select My Fighter.', ephemeral=True)
             if event_state() == 'ended':
-                return await interaction.response.send_message('Registration has closed.', ephemeral=True)
+                return await ui_reply(interaction, 'Registration has closed.', ephemeral=True)
             conn.execute('INSERT INTO players(user_id,name,color,headgear) VALUES(?,?,?,?)', (interaction.user.id, str(self.fighter_name), 'Crimson', 'Mask'))
             grant_attempts(interaction.user.id)
             conn.commit()
             p = get_player(interaction.user.id)
-        await interaction.response.send_message('Your fighter is ready! Return to `/play` to explore the castle, customize your equipment, and enter the dungeon.', embed=info_embed(p), file=avatar_file(p), ephemeral=True)
+        await ui_reply(interaction, f'⚔️ **{p["name"]} has joined the kingdom!** Your character is ready. Choose your next adventure below.', embed=castle_embed('WELCOME, ADVENTURER', 'Your fighter has been created. The Castle Gate is now open.'), file=panel_file('event'), view=PlayMenu(interaction.user.id), ephemeral=True)
 
 class CustomizeView(discord.ui.View):
     def __init__(self, uid):
@@ -279,6 +374,7 @@ class CustomizeView(discord.ui.View):
         self.add_item(CustomSelect(uid, 'color', list(COLORS)))
         self.add_item(CustomSelect(uid, 'headgear', ['Mask','Helmet','Hood','None']))
         self.add_item(CustomSelect(uid, 'weapon', list(WEAPONS)))
+        self.add_item(BackToCastle(row=3))
 
 class CustomSelect(discord.ui.Select):
     def __init__(self, uid, field, choices):
@@ -286,10 +382,10 @@ class CustomSelect(discord.ui.Select):
         super().__init__(placeholder=f'Choose {field}', options=[discord.SelectOption(label=x, value=x) for x in choices])
     async def callback(self, interaction):
         if interaction.user.id != self.uid:
-            return await interaction.response.send_message('This is not your character.', ephemeral=True)
+            return await ui_reply(interaction, 'This is not your character.', ephemeral=True)
         async with lock:
             if get_battle(self.uid):
-                return await interaction.response.send_message('Finish your current battle before changing equipment.', ephemeral=True)
+                return await ui_reply(interaction, 'Finish your current battle before changing equipment.', ephemeral=True)
             p = get_player(self.uid)
             if self.field == 'weapon' and p['weapon'] != self.values[0]:
                 # Weapon type switch keeps stage but resets weapon upgrades; refunded as materials.
@@ -298,7 +394,7 @@ class CustomSelect(discord.ui.Select):
                 conn.execute(f'UPDATE players SET {self.field}=? WHERE user_id=?', (self.values[0], self.uid))
             conn.commit()
             p = get_player(self.uid)
-        await interaction.response.send_message('Updated fighter preview:', embed=info_embed(p), file=avatar_file(p), ephemeral=True)
+        await ui_reply(interaction, 'Updated fighter preview:', embed=info_embed(p), file=avatar_file(p), ephemeral=True)
 
 class BattleView(discord.ui.View):
     def __init__(self, uid):
@@ -306,7 +402,7 @@ class BattleView(discord.ui.View):
         self.uid = uid
     async def interaction_check(self, interaction):
         if interaction.user.id != self.uid:
-            await interaction.response.send_message('This battle belongs to another fighter.', ephemeral=True)
+            await ui_reply(interaction, 'This battle belongs to another fighter.', ephemeral=True)
             return False
         return True
     @discord.ui.button(label='Attack', emoji='⚔️', style=discord.ButtonStyle.primary)
@@ -315,15 +411,19 @@ class BattleView(discord.ui.View):
     @discord.ui.button(label='Defend', emoji='🛡️', style=discord.ButtonStyle.secondary)
     async def defend(self, interaction, button):
         await resolve_action(interaction, 'defend')
-    @discord.ui.button(label='Special', emoji='🔥', style=discord.ButtonStyle.danger)
+    @discord.ui.button(label='Special', emoji='🔥', style=discord.ButtonStyle.primary)
     async def special(self, interaction, button):
         await resolve_action(interaction, 'special')
-    @discord.ui.button(label='Heal', emoji='💚', style=discord.ButtonStyle.success)
+    @discord.ui.button(label='Heal', emoji='💚', style=discord.ButtonStyle.primary)
     async def heal(self, interaction, button):
         await resolve_action(interaction, 'heal')
     @discord.ui.button(label='Focus', emoji='⚡', style=discord.ButtonStyle.secondary)
     async def focus(self, interaction, button):
         await resolve_action(interaction, 'focus')
+    @discord.ui.button(label='Castle Gate', emoji='🏰', style=discord.ButtonStyle.secondary, row=1)
+    async def exit_battle(self, interaction, button):
+        # Preserve the ongoing battle; entering the dungeon resumes it.
+        await open_castle(interaction)
 
 class DungeonResultView(discord.ui.View):
     """Next-floor navigation; exit closes the panel without spending attempts."""
@@ -334,15 +434,18 @@ class DungeonResultView(discord.ui.View):
             self.next_floor.label='Retry Floor'
     async def interaction_check(self, interaction):
         if interaction.user.id != self.uid:
-            await interaction.response.send_message('This is another fighter’s dungeon.', ephemeral=True)
+            await ui_reply(interaction, 'This is another fighter’s dungeon.', ephemeral=True)
             return False
         return True
-    @discord.ui.button(label='Next Floor',emoji='🚪',style=discord.ButtonStyle.success)
+    @discord.ui.button(label='Next Floor',emoji='🚪',style=discord.ButtonStyle.primary)
     async def next_floor(self, interaction, button):
-        await dungeon.callback(interaction)
+        if pending_encounter(self.uid):
+            await open_encounter(interaction)
+        else:
+            await dungeon.callback(interaction)
     @discord.ui.button(label='Exit Dungeon',emoji='🏰',style=discord.ButtonStyle.secondary)
     async def exit_dungeon(self, interaction, button):
-        await interaction.response.edit_message(content='🏰 You return to the castle. Your cleared floors and rewards are saved. Use `/play` whenever you wish to continue.',embed=None,attachments=[],view=None)
+        await interaction.response.edit_message(content=None, embed=castle_embed(), attachments=[panel_file('event')], view=PlayMenu(self.uid))
 
 def battle_embed(p, b, message=None):
     maxhp, atk, defense, speed, maxenergy = stats(p)
@@ -351,8 +454,11 @@ def battle_embed(p, b, message=None):
     e.add_field(name=f'🧍 {p["name"]}', value=f'❤️ {b["hp"]}/{maxhp}\n🔮 {b["energy"]}/{maxenergy}\n💚 {b["potions"]} potions')
     e.add_field(name='💀 Enemy', value=f'❤️ {b["enemy_hp"]}/{enemyhp}\n⚔️ {enemyatk} ATK\n🛡️ {enemydef} DEF' + ('\n🛡️ Shielded: normal attacks effective' if boss and b['floor']>=20 and b['turn']%5 in (1,2) else ''))
     e.add_field(name='Turn', value=f'{b["turn"]}/{30 if boss else 20} • Special cooldown: {b["special_cd"]}' + (f' • 🔥 Boss enrage +{(b["turn"]-8)*10}% incoming damage' if boss and b['turn']>8 else ''), inline=False)
-    if b['enemy_charge']:
-        e.add_field(name='⚠️ Warning', value='Enemy is charging a powerful attack next turn!', inline=False)
+    intent=enemy_intent(b)
+    e.add_field(name='📜 Enemy Intention',value=INTENT_TEXT[intent],inline=False)
+    if boss:
+        phase=boss_phase(b)
+        e.add_field(name='👑 Boss',value=f'{BOSS_NAMES[(b["floor"]//10)-1]} • Phase {phase}/3' + (' • Final Stand: higher damage, exposed openings' if phase==3 else ''),inline=False)
     if b['poisoned']:
         e.add_field(name='☠️ Poison', value=f'{b["poisoned"]} turns remaining', inline=False)
     e.set_image(url="attachment://dungeon-floor.png")
@@ -364,13 +470,13 @@ async def resolve_action(interaction, action):
         p = get_player(interaction.user.id)
         b = get_battle(interaction.user.id)
         if not p or not b:
-            return await interaction.response.send_message('No active battle. Use `/dungeon`.', ephemeral=True)
+            return await ui_reply(interaction, 'No active battle. Use `/dungeon`.', ephemeral=True)
         maxhp, atk, defense, speed, maxenergy = stats(p)
         enemymax, enemyatk, enemydef, boss = enemy_stats(b['floor'])
         if action == 'special' and (b['energy'] < 28 or b['special_cd'] > 0):
-            return await interaction.response.send_message('Special requires 28 energy and no active cooldown.', ephemeral=True)
+            return await ui_reply(interaction, 'Special requires 28 energy and no active cooldown.', ephemeral=True)
         if action == 'heal' and (b['potions'] == 0 or b['hp'] >= maxhp):
-            return await interaction.response.send_message('You cannot use a potion now.', ephemeral=True)
+            return await ui_reply(interaction, 'You cannot use a potion now.', ephemeral=True)
         hp, energy, enemyhp, potions = b['hp'], b['energy'], b['enemy_hp'], b['potions']
         focused, charge, poison = b['focused'], b['enemy_charge'], b['poisoned']
         cooldown=max(0,b['special_cd']-1)
@@ -411,10 +517,27 @@ async def resolve_action(interaction, action):
             notes.append('⚡ Restored 18 energy; your next attack is strengthened.')
         if action in ('attack','special'): focused = 0
         elif action == 'focus': focused = 1
+        intent=enemy_intent(b)
+        phase=boss_phase(b)
+        if action in ('attack','special') and intent=='guard' and enemyhp>0:
+            # Guarding enemies resist ordinary attacks; special pierces the guard.
+            mitigation=0.10 if action=='special' else 0.25
+            adjustment=round(dealt*mitigation)
+            enemyhp+=adjustment
+            notes.append(f'🛡️ Enemy guard absorbs {adjustment} damage.')
+        if action in ('attack','special') and intent=='reckless' and enemyhp>0:
+            bonus=round(dealt*.15)
+            enemyhp=max(0,enemyhp-bonus)
+            notes.append(f'⚔️ Exploited opening: +{bonus} damage!')
         if enemyhp > 0:
             rng = random.Random(b['seed'] + b['turn']*157)
             incoming = round(enemyatk*damage_reduction(defense)*rng.uniform(0.9,1.1))
             if charge: incoming = round(incoming*2.1)
+            elif intent=='heavy': incoming=round(incoming*1.45)
+            elif intent=='reckless': incoming=round(incoming*.82)
+            elif intent=='guard': incoming=round(incoming*.72)
+            if boss and phase==2: incoming=round(incoming*1.07)
+            elif boss and phase==3: incoming=round(incoming*1.14)
             if boss and b['turn']>8: incoming=round(incoming*(1+.10*(b['turn']-8)))
             if guard: incoming = max(1,round(incoming*0.55))
             # Dodge soft cap: no more than 20%.
@@ -429,7 +552,7 @@ async def resolve_action(interaction, action):
                 hp = max(0,hp-tick)
                 poison -= 1
                 notes.append(f'☠️ Poison deals **{tick}** damage.')
-            if b['floor'] >= 11 and b['turn'] % 5 == 0 and not poison:
+            if b['floor'] >= 11 and intent=='venom' and not guard and not poison:
                 poison = 2
                 notes.append('☠️ The enemy poisons you for two turns!')
             charge = 1 if b['floor'] >= 31 and b['turn'] % 4 == 0 else 0
@@ -446,6 +569,11 @@ async def resolve_action(interaction, action):
             if floor in (20,40,60,80):
                 conn.execute('UPDATE players SET weapon_stage=weapon_stage+1 WHERE user_id=?',(interaction.user.id,))
                 notes.append('✨ Weapon evolved! Your +upgrade level has been preserved.')
+            kind=encounter_kind(floor)
+            if kind:
+                conn.execute('INSERT OR IGNORE INTO dungeon_encounters(user_id,floor,kind) VALUES(?,?,?)',(interaction.user.id,floor,kind))
+                notes.append('📜 A new castle encounter awaits! Choose **Next Floor** to resolve it.')
+            conn.execute('UPDATE players SET blessing_floors=MAX(0,blessing_floors-1) WHERE user_id=?',(interaction.user.id,))
             if boss:
                 conn.execute('UPDATE players SET relics=relics+1 WHERE user_id=?',(interaction.user.id,))
                 notes.append('🏅 Earned a permanent boss relic (+0.5% maximum HP).')
@@ -465,31 +593,31 @@ async def resolve_action(interaction, action):
             embed.add_field(name='Progress',value=f'Highest floor: **{p["floor"]}/100**\nRemaining attempts: **{p["attempts"]}**')
             embed.set_image(url='attachment://dungeon-floor.png')
     # The original ephemeral message may no longer be editable after restarts; respond with a fresh panel.
-    await interaction.response.send_message(embed=embed,file=floor_file(b2['floor'] if b2 else b['floor']),view=BattleView(interaction.user.id) if b2 else DungeonResultView(interaction.user.id, won),ephemeral=True)
+    await ui_reply(interaction, embed=embed,file=floor_file(b2['floor'] if b2 else b['floor']),view=BattleView(interaction.user.id) if b2 else DungeonResultView(interaction.user.id, won),ephemeral=True)
 
 @bot.tree.command(name='register',description='Create your own dungeon fighter')
 async def register(interaction: discord.Interaction):
     if get_player(interaction.user.id):
-        return await interaction.response.send_message('You already have a fighter. Open `/play` and select My Fighter.',ephemeral=True)
+        return await ui_reply(interaction, 'You already have a fighter. Open `/play` and select My Fighter.',ephemeral=True)
     await interaction.response.send_modal(CreateFighter())
 
 @bot.tree.command(name='fighter',description='View your fighter and avatar')
 async def fighter(interaction: discord.Interaction):
     async with lock:
         p = get_player(interaction.user.id)
-        if not p: return await interaction.response.send_message('Register first with `/register`.',ephemeral=True)
+        if not p: return await ui_reply(interaction, 'Register first with `/register`.',ephemeral=True)
         grant_attempts(interaction.user.id)
         grant_stamina(interaction.user.id)
         conn.commit()
         p = get_player(interaction.user.id)
     e=info_embed(p); e.set_image(url='attachment://dungeon-panel.png')
-    await interaction.response.send_message(embed=e,files=[avatar_file(p),panel_file('fighter',p['floor'])],ephemeral=True)
+    await ui_reply(interaction, embed=e,files=[avatar_file(p),panel_file('fighter',p['floor'])],ephemeral=True)
 
 @bot.tree.command(name='customize',description='Customize your avatar, weapon and armour colours')
 async def customize(interaction: discord.Interaction):
     p = get_player(interaction.user.id)
-    if not p: return await interaction.response.send_message('Open `/play` and select Create Fighter first.',ephemeral=True)
-    await interaction.response.send_message('Choose an option below. The avatar preview updates after each selection. Switching weapon class resets its upgrade level and refunds 2 materials per level.',embed=info_embed(p),file=avatar_file(p),view=CustomizeView(interaction.user.id),ephemeral=True)
+    if not p: return await ui_reply(interaction, 'Open `/play` and select Create Fighter first.',ephemeral=True)
+    await ui_reply(interaction, 'Choose an option below. The avatar preview updates after each selection. Switching weapon class resets its upgrade level and refunds 2 materials per level.',embed=info_embed(p),file=avatar_file(p),view=CustomizeView(interaction.user.id),ephemeral=True)
 
 @bot.tree.command(name='allocate',description='Spend stat points on your fighter')
 @app_commands.describe(attribute='Attribute to improve',points='How many points to spend (1–30)')
@@ -497,67 +625,67 @@ async def customize(interaction: discord.Interaction):
 async def allocate(interaction: discord.Interaction, attribute: app_commands.Choice[str], points: app_commands.Range[int,1,30]):
     async with lock:
         p = get_player(interaction.user.id)
-        if not p: return await interaction.response.send_message('Open `/play` and select Create Fighter first.',ephemeral=True)
-        if get_battle(interaction.user.id): return await interaction.response.send_message('You cannot allocate points during combat.',ephemeral=True)
-        if free_points(p)<points: return await interaction.response.send_message(f'You have only {free_points(p)} free points.',ephemeral=True)
+        if not p: return await ui_reply(interaction, 'Open `/play` and select Create Fighter first.',ephemeral=True)
+        if get_battle(interaction.user.id): return await ui_reply(interaction, 'You cannot allocate points during combat.',ephemeral=True)
+        if free_points(p)<points: return await ui_reply(interaction, f'You have only {free_points(p)} free points.',ephemeral=True)
         conn.execute(f'UPDATE players SET {attribute.value}={attribute.value}+? WHERE user_id=?',(points,interaction.user.id))
         conn.commit()
         p = get_player(interaction.user.id)
-    await interaction.response.send_message(f'Allocated {points} points to {attribute.name}.',embed=info_embed(p),ephemeral=True)
+    await ui_reply(interaction, f'Allocated {points} points to {attribute.name}.',embed=info_embed(p),ephemeral=True)
 
 @bot.tree.command(name='respec',description='Reset your allocated stats using a respec token')
 async def respec(interaction: discord.Interaction):
     async with lock:
         p = get_player(interaction.user.id)
-        if not p: return await interaction.response.send_message('Register first.',ephemeral=True)
-        if get_battle(interaction.user.id): return await interaction.response.send_message('Finish your battle first.',ephemeral=True)
-        if p['respecs']<1: return await interaction.response.send_message('No respec tokens. Earn one from every boss.',ephemeral=True)
+        if not p: return await ui_reply(interaction, 'Register first.',ephemeral=True)
+        if get_battle(interaction.user.id): return await ui_reply(interaction, 'Finish your battle first.',ephemeral=True)
+        if p['respecs']<1: return await ui_reply(interaction, 'No respec tokens. Earn one from every boss.',ephemeral=True)
         conn.execute('UPDATE players SET vitality=0,strength=0,defence=0,agility=0,energy=0,respecs=respecs-1 WHERE user_id=?',(interaction.user.id,))
         conn.commit()
         p = get_player(interaction.user.id)
-    await interaction.response.send_message('All stat points have been refunded.',embed=info_embed(p),ephemeral=True)
+    await ui_reply(interaction, 'All stat points have been refunded.',embed=info_embed(p),ephemeral=True)
 
 @bot.tree.command(name='upgrade',description='Upgrade your weapon or armour')
 @app_commands.choices(item=[app_commands.Choice(name='Weapon',value='weapon'),app_commands.Choice(name='Armour',value='armor')])
 async def upgrade(interaction: discord.Interaction,item:app_commands.Choice[str]):
     async with lock:
         p = get_player(interaction.user.id)
-        if not p: return await interaction.response.send_message('Register first.',ephemeral=True)
-        if get_battle(interaction.user.id): return await interaction.response.send_message('Finish your battle first.',ephemeral=True)
+        if not p: return await ui_reply(interaction, 'Register first.',ephemeral=True)
+        if get_battle(interaction.user.id): return await ui_reply(interaction, 'Finish your battle first.',ephemeral=True)
         field = 'weapon_upgrade' if item.value=='weapon' else 'armor_upgrade'
         current = p[field]
-        if current>=10: return await interaction.response.send_message('Already at +10. Weapon evolution at floors 20, 40, 60 and 80 preserves upgrades.',ephemeral=True)
+        if current>=10: return await ui_reply(interaction, 'Already at +10. Weapon evolution at floors 20, 40, 60 and 80 preserves upgrades.',ephemeral=True)
         gold = (current+1)*150
         mats = current+1
         if p['gold']<gold or p['materials']<mats:
-            return await interaction.response.send_message(f'Upgrade requires **{gold} gold** and **{mats} materials**. You have {p["gold"]} gold and {p["materials"]} materials.',ephemeral=True)
+            return await ui_reply(interaction, f'Upgrade requires **{gold} gold** and **{mats} materials**. You have {p["gold"]} gold and {p["materials"]} materials.',ephemeral=True)
         conn.execute(f'UPDATE players SET {field}={field}+1,gold=gold-?,materials=materials-? WHERE user_id=?',(gold,mats,interaction.user.id))
         conn.commit()
         p = get_player(interaction.user.id)
-    await interaction.response.send_message(f'Upgrade successful: {item.name} +{p[field]}!',embed=info_embed(p),ephemeral=True)
+    await ui_reply(interaction, f'Upgrade successful: {item.name} +{p[field]}!',embed=info_embed(p),ephemeral=True)
 
 class WorkshopConfirm(discord.ui.View):
     def __init__(self, uid, item):
         super().__init__(timeout=120)
         self.uid, self.item = uid, item
-    @discord.ui.button(label='Confirm upgrade',style=discord.ButtonStyle.success,emoji='🔨')
+    @discord.ui.button(label='Confirm upgrade',style=discord.ButtonStyle.primary,emoji='🔨')
     async def confirm(self,interaction:discord.Interaction,button:discord.ui.Button):
         if interaction.user.id!=self.uid:
-            return await interaction.response.send_message('This workshop belongs to another fighter.',ephemeral=True)
+            return await ui_reply(interaction, 'This workshop belongs to another fighter.',ephemeral=True)
         async with lock:
             p=get_player(self.uid)
             if not p or get_battle(self.uid):
-                return await interaction.response.send_message('Register or finish your current battle first.',ephemeral=True)
+                return await ui_reply(interaction, 'Register or finish your current battle first.',ephemeral=True)
             field='weapon_upgrade' if self.item=='weapon' else 'armor_upgrade'
             level=p[field]
             if level>=10:
-                return await interaction.response.send_message('This item is already +10.',ephemeral=True)
+                return await ui_reply(interaction, 'This item is already +10.',ephemeral=True)
             cost=150*(level+1); mats=level+1
             if p['gold']<cost or p['materials']<mats:
-                return await interaction.response.send_message(f'Need {cost:,} gold and {mats} materials; check `/wallet`.',ephemeral=True)
+                return await ui_reply(interaction, f'Need {cost:,} gold and {mats} materials; check `/wallet`.',ephemeral=True)
             conn.execute(f'UPDATE players SET {field}={field}+1,gold=gold-?,materials=materials-? WHERE user_id=?',(cost,mats,self.uid))
             conn.commit(); p=get_player(self.uid)
-        await interaction.response.edit_message(content=f'✅ {self.item.title()} upgraded to **+{p[field]}**!',embed=info_embed(p),view=None)
+        await interaction.response.edit_message(content=f'✅ {self.item.title()} upgraded to **+{p[field]}**!',embed=info_embed(p),view=ForgeMenu(self.uid))
 
 class WorkshopView(discord.ui.View):
     def __init__(self,uid):
@@ -571,27 +699,27 @@ class WorkshopView(discord.ui.View):
         await self.ask(interaction,'armor')
     async def ask(self,interaction,item):
         if interaction.user.id!=self.uid:
-            return await interaction.response.send_message('This workshop belongs to another fighter.',ephemeral=True)
+            return await ui_reply(interaction, 'This workshop belongs to another fighter.',ephemeral=True)
         p=get_player(self.uid)
         if not p or get_battle(self.uid):
-            return await interaction.response.send_message('Register or finish your battle first.',ephemeral=True)
+            return await ui_reply(interaction, 'Register or finish your battle first.',ephemeral=True)
         level=p['weapon_upgrade' if item=='weapon' else 'armor_upgrade']
         if level>=10:
-            return await interaction.response.send_message('Already fully upgraded (+10).',ephemeral=True)
+            return await ui_reply(interaction, 'Already fully upgraded (+10).',ephemeral=True)
         cost=150*(level+1); mats=level+1
-        await interaction.response.send_message(f'🔨 **{item.title()} +{level} → +{level+1}**\nCost: **{cost:,} gold** and **{mats} materials**\nYour wallet: **{p["gold"]:,} gold**, **{p["materials"]} materials**\nConfirm to purchase (cost rechecked at purchase time).',view=WorkshopConfirm(self.uid,item),ephemeral=True)
+        await ui_reply(interaction, f'🔨 **{item.title()} +{level} → +{level+1}**\nCost: **{cost:,} gold** and **{mats} materials**\nYour wallet: **{p["gold"]:,} gold**, **{p["materials"]} materials**\nConfirm to purchase (cost rechecked at purchase time).',view=WorkshopConfirm(self.uid,item),ephemeral=True)
 
 @bot.tree.command(name='workshop',description='Open the weapon and armour upgrade workshop')
 async def workshop(interaction:discord.Interaction):
     p=get_player(interaction.user.id)
-    if not p: return await interaction.response.send_message('Open `/play` and select Create Fighter first.',ephemeral=True)
+    if not p: return await ui_reply(interaction, 'Open `/play` and select Create Fighter first.',ephemeral=True)
     e=info_embed(p);e.set_image(url='attachment://dungeon-panel.png')
-    await interaction.response.send_message('🔨 **DUNGEON WORKSHOP**\nChoose which item to upgrade. Upgrades always succeed and weapon evolution preserves your +level.',embed=e,file=panel_file('workshop'),view=WorkshopView(interaction.user.id),ephemeral=True)
+    await ui_reply(interaction, '🔨 **DUNGEON WORKSHOP**\nChoose which item to upgrade. Upgrades always succeed and weapon evolution preserves your +level.',embed=e,file=panel_file('workshop'),view=WorkshopView(interaction.user.id),ephemeral=True)
 
 @bot.tree.command(name='wallet',description='View your gold, materials and next equipment upgrade costs')
 async def wallet(interaction: discord.Interaction):
     p = get_player(interaction.user.id)
-    if not p: return await interaction.response.send_message('Open `/play` and select Create Fighter first.',ephemeral=True)
+    if not p: return await ui_reply(interaction, 'Open `/play` and select Create Fighter first.',ephemeral=True)
     e = discord.Embed(title='🪙 Dungeon Wallet',description=f'**Gold:** {p["gold"]:,}\n**Materials:** {p["materials"]:,}',color=discord.Color.gold())
     for title,field in [('Weapon','weapon_upgrade'),('Armour','armor_upgrade')]:
         level=p[field]
@@ -603,22 +731,27 @@ async def wallet(interaction: discord.Interaction):
     e.add_field(name='Advanced forging',value=f'Weapon +{p["weapon_advanced"]}/5 • Armour +{p["armor_advanced"]}/5. Unlock at Floor 50 after +10. Open `/play` → Blacksmith → Advanced Forging.',inline=False)
     e.set_footer(text='Boss chests award bonus resources every 10 floors. Rewards are first-clear only.')
     e.set_image(url='attachment://dungeon-panel.png')
-    await interaction.response.send_message(embed=e,file=panel_file('wallet'),ephemeral=True)
+    await ui_reply(interaction, embed=e,file=panel_file('wallet'),ephemeral=True)
 
 @bot.tree.command(name='dungeon',description='Enter the next solo dungeon floor or resume your battle')
 async def dungeon(interaction: discord.Interaction):
     async with lock:
         p = get_player(interaction.user.id)
-        if not p: return await interaction.response.send_message('Open `/play` and select Create Fighter first.',ephemeral=True)
+        if not p: return await ui_reply(interaction, 'Open `/play` and select Create Fighter first.',ephemeral=True)
         b = get_battle(interaction.user.id)
+        if not b and pending_encounter(interaction.user.id):
+            return await open_encounter(interaction)
+        elite=conn.execute('SELECT floor FROM elite_trials WHERE user_id=? AND completed=0 ORDER BY floor LIMIT 1',(interaction.user.id,)).fetchone()
+        if not b and elite:
+            return await elite_panel(interaction,elite['floor'])
         if b:
             embed = battle_embed(p,b,'Your battle is still in progress. Continue below.')
         else:
             if event_state()!='active':
-                return await interaction.response.send_message('Dungeon attempts are available only during the seven-day event. Check `/event`.',ephemeral=True)
+                return await ui_reply(interaction, 'Dungeon attempts are available only during the seven-day event. Check `/event`.',ephemeral=True)
             p = grant_attempts(interaction.user.id)
-            if p['floor']>=100: return await interaction.response.send_message('🏆 You have cleared all 100 dungeon floors!',ephemeral=True)
-            if p['attempts']<=0: return await interaction.response.send_message('No attempts remaining. New attempts unlock at 00:00 UTC each event day.',ephemeral=True)
+            if p['floor']>=100: return await ui_reply(interaction, '🏆 You have cleared all 100 dungeon floors!',ephemeral=True)
+            if p['attempts']<=0: return await ui_reply(interaction, 'No attempts remaining. New attempts unlock at 00:00 UTC each event day.',ephemeral=True)
             floor = p['floor']+1
             enemyhp,_,_,_ = enemy_stats(floor)
             hp,_,_,_,energy = stats(p)
@@ -628,17 +761,17 @@ async def dungeon(interaction: discord.Interaction):
             b = get_battle(interaction.user.id)
             embed = battle_embed(p,b,'A monster blocks your path! Choose your first action.')
         conn.commit()
-    await interaction.response.send_message(embed=embed,file=floor_file(b['floor']),view=BattleView(interaction.user.id),ephemeral=True)
+    await ui_reply(interaction, embed=embed,file=floor_file(b['floor']),view=BattleView(interaction.user.id),ephemeral=True)
 
 @bot.tree.command(name='activities',description='Earn resources through daily stamina-limited activities')
 @app_commands.choices(activity=[app_commands.Choice(name='Gold Mine (80 gold)',value='mine'),app_commands.Choice(name='Crystal Cavern (2 materials)',value='crystal'),app_commands.Choice(name='Ancient Ruins (110 gold, 2 materials)',value='ruins')])
 async def activities(interaction:discord.Interaction,activity:app_commands.Choice[str]):
     async with lock:
         p=get_player(interaction.user.id)
-        if not p:return await interaction.response.send_message('Register first.',ephemeral=True)
-        if event_state()!='active':return await interaction.response.send_message('Activities are available during the seven-day dungeon event.',ephemeral=True)
+        if not p:return await ui_reply(interaction, 'Register first.',ephemeral=True)
+        if event_state()!='active':return await ui_reply(interaction, 'Activities are available during the seven-day dungeon event.',ephemeral=True)
         p=grant_stamina(interaction.user.id)
-        if p['stamina']<1:return await interaction.response.send_message(f'No activity stamina left. You gain 15 at 00:00 UTC daily and +1 every 2 hours (maximum 45). {stamina_next_regen(p)}.',ephemeral=True)
+        if p['stamina']<1:return await ui_reply(interaction, f'No activity stamina left. You gain 15 at 00:00 UTC daily and +1 every 2 hours (maximum 45). {stamina_next_regen(p)}.',ephemeral=True)
         gold,mats={'mine':(80,0),'crystal':(0,2),'ruins':(110,2)}[activity.value]
         conn.execute('UPDATE players SET stamina=stamina-1,gold=gold+?,materials=materials+? WHERE user_id=?',(gold,mats,interaction.user.id))
         conn.commit()
@@ -648,14 +781,14 @@ async def activities(interaction:discord.Interaction,activity:app_commands.Choic
             conn.execute('UPDATE players SET stamina_regen_at=? WHERE user_id=?',(int(time.time()),interaction.user.id))
             conn.commit()
         updated=get_player(interaction.user.id)
-    await interaction.response.send_message(f'⛏️ **{activity.name}** complete! +{gold} gold, +{mats} materials. **{remaining}** stamina remaining. 🕒 {stamina_next_regen(updated)}.',ephemeral=True)
+    await ui_reply(interaction, f'⛏️ **{activity.name}** complete! +{gold} gold, +{mats} materials. **{remaining}** stamina remaining. 🕒 {stamina_next_regen(updated)}.',ephemeral=True)
 
 @bot.tree.command(name='stamina',description='Check your activity stamina and next regeneration')
 async def stamina_status(interaction:discord.Interaction):
     async with lock:
         p=get_player(interaction.user.id)
         if not p:
-            return await interaction.response.send_message('Register first with `/register`.',ephemeral=True)
+            return await ui_reply(interaction, 'Register first with `/register`.',ephemeral=True)
         if event_state()=='active':
             p=grant_stamina(interaction.user.id)
             conn.commit()
@@ -663,47 +796,47 @@ async def stamina_status(interaction:discord.Interaction):
                  f'🕒 {stamina_next_regen(p) if event_state()=="active" else "Regeneration only during the event"}\n'
                  f'🎁 +{STAMINA_DAILY} daily at 00:00 UTC (up to cap {STAMINA_CAP}).\n'
                  f'⛏️ Use `/play` → Gather Resources to spend stamina.')
-    await interaction.response.send_message(message,ephemeral=True)
+    await ui_reply(interaction, message,ephemeral=True)
 
 @bot.tree.command(name='skill',description='Select one permanent skill specialization (after Floor 5)')
 @app_commands.choices(path=[app_commands.Choice(name='Berserker — attack focus',value='Berserker'),app_commands.Choice(name='Guardian — survival focus',value='Guardian'),app_commands.Choice(name='Arcanist — energy focus',value='Arcanist')])
 async def skill(interaction:discord.Interaction,path:app_commands.Choice[str]):
     async with lock:
         p=get_player(interaction.user.id)
-        if not p or p['floor']<5:return await interaction.response.send_message('Clear Floor 5 first.',ephemeral=True)
-        if p['skill']!='None':return await interaction.response.send_message('Your skill specialization is already selected.',ephemeral=True)
-        if get_battle(interaction.user.id):return await interaction.response.send_message('Finish your battle before changing equipment.',ephemeral=True)
+        if not p or p['floor']<5:return await ui_reply(interaction, 'Clear Floor 5 first.',ephemeral=True)
+        if p['skill']!='None':return await ui_reply(interaction, 'Your skill specialization is already selected.',ephemeral=True)
+        if get_battle(interaction.user.id):return await ui_reply(interaction, 'Finish your battle before changing equipment.',ephemeral=True)
         conn.execute('UPDATE players SET skill=? WHERE user_id=?',(path.value,interaction.user.id));conn.commit()
-    await interaction.response.send_message(f'🌳 **{path.value}** unlocked. View its bonuses with `/fighter`.',ephemeral=True)
+    await ui_reply(interaction, f'🌳 **{path.value}** unlocked. View its bonuses with `/fighter`.',ephemeral=True)
 
 @bot.tree.command(name='enchant',description='Enchant equipment with Flame or Ward (Floor 30+)')
 @app_commands.choices(effect=[app_commands.Choice(name='Flame — +3.5% attack',value='Flame'),app_commands.Choice(name='Ward — +4.5% HP',value='Ward')])
 async def enchant(interaction:discord.Interaction,effect:app_commands.Choice[str]):
     async with lock:
         p=get_player(interaction.user.id)
-        if not p or p['floor']<30:return await interaction.response.send_message('Clear Floor 30 to unlock enchantments.',ephemeral=True)
-        if p['enchantment']!='None':return await interaction.response.send_message('You already have an enchantment.',ephemeral=True)
-        if get_battle(interaction.user.id):return await interaction.response.send_message('Finish your battle first.',ephemeral=True)
-        if p['gold']<4000 or p['materials']<25:return await interaction.response.send_message('Requires 4,000 gold and 25 materials.',ephemeral=True)
+        if not p or p['floor']<30:return await ui_reply(interaction, 'Clear Floor 30 to unlock enchantments.',ephemeral=True)
+        if p['enchantment']!='None':return await ui_reply(interaction, 'You already have an enchantment.',ephemeral=True)
+        if get_battle(interaction.user.id):return await ui_reply(interaction, 'Finish your battle first.',ephemeral=True)
+        if p['gold']<4000 or p['materials']<25:return await ui_reply(interaction, 'Requires 4,000 gold and 25 materials.',ephemeral=True)
         conn.execute('UPDATE players SET enchantment=?,gold=gold-4000,materials=materials-25 WHERE user_id=?',(effect.value,interaction.user.id));conn.commit()
-    await interaction.response.send_message(f'✨ {effect.value} enchantment equipped!',ephemeral=True)
+    await ui_reply(interaction, f'✨ {effect.value} enchantment equipped!',ephemeral=True)
 
 @bot.tree.command(name='advance',description='Upgrade +10 weapon or armour with advanced forging (Floor 50+)')
 @app_commands.choices(item=[app_commands.Choice(name='Weapon',value='weapon'),app_commands.Choice(name='Armour',value='armor')])
 async def advance(interaction:discord.Interaction,item:app_commands.Choice[str]):
     async with lock:
         p=get_player(interaction.user.id)
-        if not p or p['floor']<50:return await interaction.response.send_message('Advanced forging unlocks at Floor 50.',ephemeral=True)
-        if get_battle(interaction.user.id):return await interaction.response.send_message('Finish your battle first.',ephemeral=True)
+        if not p or p['floor']<50:return await ui_reply(interaction, 'Advanced forging unlocks at Floor 50.',ephemeral=True)
+        if get_battle(interaction.user.id):return await ui_reply(interaction, 'Finish your battle first.',ephemeral=True)
         key=item.value+'_advanced';lvl=p[key]
-        if p[item.value+'_upgrade']<10:return await interaction.response.send_message('Reach equipment +10 first.',ephemeral=True)
-        if lvl>=5:return await interaction.response.send_message('Already at advanced +5.',ephemeral=True)
+        if p[item.value+'_upgrade']<10:return await ui_reply(interaction, 'Reach equipment +10 first.',ephemeral=True)
+        if lvl>=5:return await ui_reply(interaction, 'Already at advanced +5.',ephemeral=True)
         gold,mats=advanced_cost(lvl)
-        if p['gold']<gold or p['materials']<mats:return await interaction.response.send_message(f'Next upgrade costs {gold:,} gold and {mats} materials.',ephemeral=True)
+        if p['gold']<gold or p['materials']<mats:return await ui_reply(interaction, f'Next upgrade costs {gold:,} gold and {mats} materials.',ephemeral=True)
         conn.execute(f'UPDATE players SET {key}={key}+1,gold=gold-?,materials=materials-? WHERE user_id=?',(gold,mats,interaction.user.id));conn.commit()
-    await interaction.response.send_message(f'🔨 {item.name} advanced to **+{lvl+1}** for {gold:,} gold and {mats} materials.',ephemeral=True)
+    await ui_reply(interaction, f'🔨 {item.name} advanced to **+{lvl+1}** for {gold:,} gold and {mats} materials.',ephemeral=True)
 
-arena_system = install_arena(bot, conn, lock, get_player, event_day)
+arena_system = install_arena(bot, conn, lock, get_player, event_day, lambda i: open_castle(i))
 
 @bot.tree.command(name='leaderboard',description='View the solo dungeon tournament rankings')
 async def leaderboard(interaction: discord.Interaction):
@@ -715,7 +848,7 @@ async def leaderboard(interaction: discord.Interaction):
             arena_text = f' • 🏟️ **{p["arena_points"]}/500**' if p['arena_done']==5 else (f' • Arena {p["arena_done"]}/5' if p['arena_done'] else '')
             e.add_field(name=f'{["🥇","🥈","🥉"][i] if i<3 else str(i+1)+"."} {p["name"]}',value=f'Floor **{p["floor"]}/100** • {p["spent"]} attempts{arena_text}',inline=False)
     e.set_image(url="attachment://dungeon-panel.png")
-    await interaction.response.send_message(embed=e,file=panel_file("leaderboard"),ephemeral=False)
+    await ui_reply(interaction, embed=e,file=panel_file("leaderboard"),ephemeral=False)
 
 @bot.tree.command(name='event',description='View the tournament dates and rules')
 async def event(interaction: discord.Interaction):
@@ -726,7 +859,269 @@ async def event(interaction: discord.Interaction):
     e.add_field(name='Arena window',value='Arena is open on event days 1–9, including two days after the dungeon closes.',inline=False)
     e.add_field(name='Rewards',value='First-clear rewards and boss relics. `/activities` earns extra resources using 15 daily stamina plus +1 regeneration every 2 hours (cap 45). `/skill` unlocks after Floor 5, `/enchant` after Floor 30 and `/advance` after Floor 50.',inline=False)
     e.set_image(url="attachment://dungeon-panel.png")
-    await interaction.response.send_message(embed=e,file=panel_file("event"),ephemeral=True)
+    await ui_reply(interaction, embed=e,file=panel_file("event"),ephemeral=True)
+
+# ----- v13 medieval encounters, merchant and cooperative world raids -----
+def encounter_embed(row):
+    floor,kind=row['floor'],row['kind']
+    if kind=='doors':
+        desc=('Three ancient doors stand before you. Each promises a different path. '
+              'Choose once; the result is saved. You may also leave safely.\n\n'
+              '🛡️ **Iron Door:** face an elite guardian for extra gold and materials.\n'
+              '🪙 **Golden Door:** collect a guaranteed treasury reward.\n'
+              '✨ **Runic Door:** receive a temporary combat blessing.')
+        title=f'🚪 Floor {floor} — The Three Doors'
+    else:
+        title=f'🗝️ Floor {floor} — The Forgotten Treasury'
+        desc=('Choose exactly one chest. Rewards are guaranteed, with no hidden traps.\n\n'
+              '🪙 King’s Chest — 350 gold\n🔨 Smith’s Chest — 8 materials\n'
+              '💚 Healer’s Chest — a three-battle +5% HP blessing')
+    e=discord.Embed(title=title,description=desc,color=discord.Color.from_rgb(137,94,48))
+    e.set_image(url='attachment://dungeon-panel.png')
+    return e
+
+async def open_encounter(interaction):
+    row=pending_encounter(interaction.user.id)
+    if not row: return await dungeon.callback(interaction)
+    await ui_reply(interaction, embed=encounter_embed(row),file=panel_file(row['kind']),view=EncounterView(interaction.user.id,row['floor'],row['kind']),ephemeral=True)
+
+class EncounterView(discord.ui.View):
+    def __init__(self,uid,floor,kind):
+        super().__init__(timeout=900)
+        self.uid,self.floor,self.kind=uid,floor,kind
+        options=([('Iron Door','iron','⚔️'),('Golden Door','gold','🪙'),('Runic Door','rune','✨')]
+                 if kind=='doors' else [('King’s Chest','gold','🪙'),('Smith’s Chest','material','🔨'),('Healer’s Chest','supply','💚')])
+        for label,value,emoji in options:
+            btn=discord.ui.Button(label=label,emoji=emoji,style=discord.ButtonStyle.primary)
+            async def choose(i,choice=value): await resolve_encounter(i,self.floor,self.kind,choice)
+            btn.callback=choose
+            self.add_item(btn)
+        skip=discord.ui.Button(label='Leave Safely',emoji='🚪',style=discord.ButtonStyle.secondary,row=1)
+        async def leave(i): await resolve_encounter(i,self.floor,self.kind,'skip')
+        skip.callback=leave;self.add_item(skip)
+    async def interaction_check(self,i):
+        if i.user.id!=self.uid:
+            await ui_reply(i, 'This is not your encounter.',ephemeral=True);return False
+        return True
+
+async def resolve_encounter(interaction,floor,kind,choice):
+    async with lock:
+        uid=interaction.user.id
+        row=conn.execute('SELECT * FROM dungeon_encounters WHERE user_id=? AND floor=? AND kind=?',(uid,floor,kind)).fetchone()
+        if not row or row['status']!='pending':
+            return await ui_reply(interaction, 'This encounter has already been resolved.',ephemeral=True)
+        if get_battle(uid):return await ui_reply(interaction, 'Finish your current battle first.',ephemeral=True)
+        gold=mats=0;blessing=None
+        if kind=='doors':
+            if choice=='iron': gold,mats=0,0
+            elif choice=='gold': gold,mats=350+floor,4
+            elif choice=='rune': blessing='knight'
+            elif choice!='skip':return await ui_reply(interaction, 'Invalid choice.',ephemeral=True)
+        else:
+            if choice=='gold':gold=350
+            elif choice=='material':mats=8
+            elif choice=='supply':blessing='supplies'
+            elif choice!='skip':return await ui_reply(interaction, 'Invalid choice.',ephemeral=True)
+        # One atomic claim; repeated clicks cannot collect rewards twice.
+        updated=conn.execute("UPDATE dungeon_encounters SET status='claimed',choice=? WHERE user_id=? AND floor=? AND kind=? AND status='pending'",(choice,uid,floor,kind))
+        if updated.rowcount!=1:
+            return await ui_reply(interaction, 'Already claimed.',ephemeral=True)
+        if kind=='doors' and choice=='iron':
+            conn.execute('INSERT OR IGNORE INTO elite_trials(user_id,floor) VALUES(?,?)',(uid,floor))
+        if blessing:
+            conn.execute('UPDATE players SET blessing=?,blessing_floors=3 WHERE user_id=?',(blessing,uid))
+        conn.execute('UPDATE players SET gold=gold+?,materials=materials+? WHERE user_id=?',(gold,mats,uid))
+        conn.commit()
+    text=('You leave the chamber safely.' if choice=='skip' else
+          f'You received **{gold} gold**, **{mats} materials**.' + (f' **{blessing.title()} blessing** for three cleared floors.' if blessing else ''))
+    if kind=='doors' and choice=='iron':
+        return await elite_panel(interaction,floor)
+    await ui_reply(interaction, embed=discord.Embed(title='📜 Encounter Resolved',description=text,color=discord.Color.gold()),view=ContinueView(uid),ephemeral=True)
+
+ELITE_CUES=('heavy','reckless','guard')
+ELITE_CORRECT={'heavy':'defend','reckless':'attack','guard':'special'}
+
+async def elite_panel(interaction,floor):
+    row=conn.execute('SELECT * FROM elite_trials WHERE user_id=? AND floor=?',(interaction.user.id,floor)).fetchone()
+    if not row or row['completed']:
+        return await ui_reply(interaction, 'This elite trial is already complete.',ephemeral=True)
+    turn=row['turn'];cue=ELITE_CUES[(turn+floor//10)%3]
+    embed=discord.Embed(title=f'🛡️ Iron Guardian — Floor {floor}',description='Optional three-round tactical encounter. Read the guardian’s intention. Two correct counters earn the bonus; there is no HP or attempt penalty for failure.\n\n'+INTENT_TEXT[cue],color=discord.Color.dark_gold())
+    embed.add_field(name='Round',value=f'{turn+1}/3')
+    embed.add_field(name='Successful counters',value=f'{row["successes"]}/3')
+    embed.set_image(url='attachment://dungeon-panel.png')
+    await ui_reply(interaction, embed=embed,file=panel_file('elite'),view=EliteView(interaction.user.id,floor),ephemeral=True)
+
+class EliteView(discord.ui.View):
+    def __init__(self,uid,floor):super().__init__(timeout=900);self.uid=uid;self.floor=floor
+    async def interaction_check(self,i):
+        if i.user.id!=self.uid:
+            await ui_reply(i, 'This is another adventurer’s trial.',ephemeral=True);return False
+        return True
+    @discord.ui.button(label='Attack',emoji='⚔️',style=discord.ButtonStyle.primary)
+    async def attack(self,i,b):await elite_action(i,self.floor,'attack')
+    @discord.ui.button(label='Defend',emoji='🛡️',style=discord.ButtonStyle.secondary)
+    async def defend(self,i,b):await elite_action(i,self.floor,'defend')
+    @discord.ui.button(label='Special',emoji='✨',style=discord.ButtonStyle.primary)
+    async def special(self,i,b):await elite_action(i,self.floor,'special')
+
+async def elite_action(interaction,floor,action):
+    async with lock:
+        uid=interaction.user.id
+        row=conn.execute('SELECT * FROM elite_trials WHERE user_id=? AND floor=?',(uid,floor)).fetchone()
+        if not row or row['completed']:
+            return await ui_reply(interaction, 'This trial has already ended.',ephemeral=True)
+        turn=row['turn'];cue=ELITE_CUES[(turn+floor//10)%3]
+        correct=action==ELITE_CORRECT[cue]
+        successes=row['successes']+int(correct)
+        complete=turn+1==3
+        conn.execute('UPDATE elite_trials SET turn=?,successes=?,completed=? WHERE user_id=? AND floor=?',(turn+1,successes,int(complete),uid,floor))
+        gold=mats=0
+        if complete and successes>=2:
+            gold,mats=450+floor*2,5+floor//20
+            conn.execute('UPDATE players SET gold=gold+?,materials=materials+? WHERE user_id=?',(gold,mats,uid))
+        conn.commit()
+    if complete:
+        message=(f'Guardian defeated! **+{gold} gold and +{mats} materials.**' if successes>=2 else
+                 'The guardian holds the Iron Door. No bonus this time, but your dungeon progress is safe.')
+        return await ui_reply(interaction, embed=discord.Embed(title='⚔️ Iron Trial Complete',description=message,color=discord.Color.gold()),view=ContinueView(uid),ephemeral=True)
+    await elite_panel(interaction,floor)
+
+class ContinueView(discord.ui.View):
+    def __init__(self,uid):super().__init__(timeout=900);self.uid=uid
+    async def interaction_check(self,i):
+        if i.user.id!=self.uid:
+            await ui_reply(i, 'This is not your fighter.',ephemeral=True);return False
+        return True
+    @discord.ui.button(label='Next Floor',emoji='⚔️',style=discord.ButtonStyle.primary)
+    async def next(self,i,b):await dungeon.callback(i)
+    @discord.ui.button(label='Castle Gate',emoji='🏰',style=discord.ButtonStyle.secondary)
+    async def castle(self,i,b):await open_castle(i)
+
+async def merchant_menu(interaction):
+    p=get_player(interaction.user.id)
+    if not p:return await ui_reply(interaction, 'Create a fighter first.',ephemeral=True)
+    floor=(p['floor']//10)*10
+    if floor<10 or floor>=100:
+        return await ui_reply(interaction, 'The Wandering Merchant visits after boss floors 10–90.',ephemeral=True)
+    if get_battle(interaction.user.id):
+        return await ui_reply(interaction, 'Finish your battle before visiting the merchant.',ephemeral=True)
+    options=[]
+    for key,(name,cost,_,desc) in MERCHANT_ITEMS.items():
+        bought=conn.execute('SELECT 1 FROM merchant_purchases WHERE user_id=? AND floor=? AND item=?',(interaction.user.id,floor,key)).fetchone()
+        options.append(f'{"~~" if bought else ""}**{name}** — {cost:,} gold: {desc}{"~~ (Purchased)" if bought else ""}')
+    embed=discord.Embed(title=f'🧙 Wandering Merchant — Floor {floor}',description='\n'.join(options)+f'\n\nYour gold: **{p["gold"]:,}**',color=discord.Color.from_rgb(135,90,43))
+    embed.set_image(url='attachment://dungeon-panel.png')
+    await ui_reply(interaction, embed=embed,file=panel_file('merchant'),view=MerchantView(interaction.user.id,floor),ephemeral=True)
+
+class MerchantView(discord.ui.View):
+    def __init__(self,uid,floor):
+        super().__init__(timeout=900);self.uid=uid;self.floor=floor
+        select=discord.ui.Select(placeholder='Purchase one item (each item once per merchant)',options=[discord.SelectOption(label=v[0],value=k,description=f'{v[1]:,} gold') for k,v in MERCHANT_ITEMS.items()])
+        async def buy(i):await purchase_merchant(i,self.floor,select.values[0])
+        select.callback=buy;self.add_item(select)
+        self.add_item(BackToCastle(row=1))
+    async def interaction_check(self,i):
+        if i.user.id!=self.uid:
+            await ui_reply(i, 'This merchant panel is not yours.',ephemeral=True);return False
+        return True
+
+async def purchase_merchant(interaction,floor,key):
+    if key not in MERCHANT_ITEMS:return await ui_reply(interaction, 'Invalid item.',ephemeral=True)
+    name,cost,_,_=MERCHANT_ITEMS[key]
+    async with lock:
+        uid=interaction.user.id;p=get_player(uid)
+        if not p or (p['floor']//10)*10!=floor or get_battle(uid):
+            return await ui_reply(interaction, 'Merchant no longer available.',ephemeral=True)
+        if p['gold']<cost:return await ui_reply(interaction, f'Need {cost:,} gold; you have {p["gold"]:,}.',ephemeral=True)
+        if conn.execute('SELECT 1 FROM merchant_purchases WHERE user_id=? AND floor=? AND item=?',(uid,floor,key)).fetchone():
+            return await ui_reply(interaction, 'You already purchased this item at this merchant.',ephemeral=True)
+        conn.execute('INSERT INTO merchant_purchases(user_id,floor,item) VALUES(?,?,?)',(uid,floor,key))
+        gold=mats=0
+        if key=='forge':mats=8
+        elif key=='relic':gold,mats=300,5
+        elif key in ('supplies','knight','berserker'):
+            conn.execute('UPDATE players SET blessing=?,blessing_floors=3 WHERE user_id=?',(key,uid))
+        conn.execute('UPDATE players SET gold=gold-?+?,materials=materials+? WHERE user_id=?',(cost,gold,mats,uid))
+        conn.commit()
+    await ui_reply(interaction, f'🧙 Purchased **{name}** for {cost:,} gold. +{gold} gold, +{mats} materials. Blessings, if any, last three cleared floors.',ephemeral=True)
+
+RAID_BOSSES=['Stone Colossus','Dread Wyvern','Crypt Behemoth','Iron Titan','Frost Wyrm','Ashen Giant','Ancient Dragon']
+
+def raid_day():return event_day()
+def ensure_raid(day):
+    conn.execute('INSERT OR IGNORE INTO world_raids(day,hp,max_hp) VALUES(?,?,?)',(day,20000,20000))
+    return conn.execute('SELECT * FROM world_raids WHERE day=?',(day,)).fetchone()
+
+async def raid_menu(interaction):
+    if event_state()!='active':return await ui_reply(interaction, 'World raids run during the seven-day dungeon event.',ephemeral=True)
+    if not get_player(interaction.user.id):return await ui_reply(interaction, 'Create a fighter first.',ephemeral=True)
+    async with lock:
+        day=raid_day();raid=ensure_raid(day)
+        record=conn.execute('SELECT * FROM raid_participation WHERE user_id=? AND day=?',(interaction.user.id,day)).fetchone()
+        conn.commit()
+    tries=record['attempts'] if record else 0
+    embed=discord.Embed(title=f'🐉 Day {day} World Raid — {RAID_BOSSES[(day-1)%7]}',description='An asynchronous kingdom-wide raid. Each fighter gets three short attacks per day. Damage is standardized; dungeon equipment does not affect raid power.\n\nRaid victory grants a bonus to all participants who claim it.',color=discord.Color.dark_red())
+    embed.add_field(name='Raid HP',value=f'{raid["hp"]:,} / {raid["max_hp"]:,}')
+    embed.add_field(name='Your attempts',value=f'{3-tries}/3 remaining')
+    embed.add_field(name='Your damage',value=f'{record["damage"]:,}' if record else '0')
+    if tries<3 and raid['hp']>0:
+        cue=ELITE_CUES[(day+tries)%3]
+        embed.add_field(name='Guardian’s intention',value=INTENT_TEXT[cue],inline=False)
+    embed.set_image(url='attachment://dungeon-panel.png')
+    await ui_reply(interaction, embed=embed,file=panel_file('raid'),view=RaidView(interaction.user.id),ephemeral=True)
+
+class RaidView(discord.ui.View):
+    def __init__(self,uid):super().__init__(timeout=900);self.uid=uid
+    async def interaction_check(self,i):
+        if i.user.id!=self.uid:
+            await ui_reply(i, 'This raid panel is not yours.',ephemeral=True);return False
+        return True
+    @discord.ui.button(label='Strike',emoji='⚔️',style=discord.ButtonStyle.primary)
+    async def attack(self,i,b):await raid_attack(i,'attack')
+    @discord.ui.button(label='Guard',emoji='🛡️',style=discord.ButtonStyle.primary)
+    async def guard(self,i,b):await raid_attack(i,'defend')
+    @discord.ui.button(label='Pierce',emoji='✨',style=discord.ButtonStyle.secondary)
+    async def pierce(self,i,b):await raid_attack(i,'special')
+    @discord.ui.button(label='Claim Victory Bonus',emoji='🏆',style=discord.ButtonStyle.primary)
+    async def claim(self,i,b):await raid_claim(i)
+    @discord.ui.button(label='Castle Gate',emoji='🏰',style=discord.ButtonStyle.secondary)
+    async def castle(self,i,b):await open_castle(i)
+
+async def raid_attack(interaction,action):
+    async with lock:
+        day=raid_day();uid=interaction.user.id
+        if event_state()!='active':return await ui_reply(interaction, 'The raid has ended.',ephemeral=True)
+        if not get_player(uid):return await ui_reply(interaction, 'Create a fighter first.',ephemeral=True)
+        raid=ensure_raid(day)
+        if raid['hp']<=0:return await ui_reply(interaction, 'The kingdom has defeated this boss! Claim your victory bonus.',ephemeral=True)
+        conn.execute('INSERT OR IGNORE INTO raid_participation(user_id,day) VALUES(?,?)',(uid,day))
+        row=conn.execute('SELECT * FROM raid_participation WHERE user_id=? AND day=?',(uid,day)).fetchone()
+        if row['attempts']>=3:return await ui_reply(interaction, 'All three raid attempts used today.',ephemeral=True)
+        # Every player sees the same learnable telegraphs and equal potential damage.
+        cue=ELITE_CUES[(day+row['attempts'])%3]
+        correct=action==ELITE_CORRECT[cue]
+        damage=min(raid['hp'],650 if correct else 400)
+        conn.execute('UPDATE world_raids SET hp=MAX(0,hp-?) WHERE day=?',(damage,day))
+        conn.execute('UPDATE raid_participation SET attempts=attempts+1,damage=damage+? WHERE user_id=? AND day=?',(damage,uid,day))
+        conn.execute('UPDATE players SET gold=gold+100,materials=materials+1 WHERE user_id=?',(uid,))
+        conn.commit()
+        left=raid['hp']-damage
+    await ui_reply(interaction, f'⚔️ {"Perfect counter!" if correct else "The boss resisted your move."} You dealt **{damage}** raid damage! +100 gold and +1 material. Boss HP: **{left:,}**. You have **{2-row["attempts"]}** attacks remaining.',view=RaidView(uid),ephemeral=True)
+
+async def raid_claim(interaction):
+    async with lock:
+        day=raid_day();uid=interaction.user.id
+        if not 1<=day<=7:return await ui_reply(interaction, 'Raid rewards are available only during the event.',ephemeral=True)
+        raid=ensure_raid(day)
+        row=conn.execute('SELECT * FROM raid_participation WHERE user_id=? AND day=?',(uid,day)).fetchone()
+        if not row or row['attempts']<1:return await ui_reply(interaction, 'Participate in this raid first.',ephemeral=True)
+        if raid['hp']>0:return await ui_reply(interaction, f'The boss still has {raid["hp"]:,} HP.',ephemeral=True)
+        if row['victory_claimed']:return await ui_reply(interaction, 'Victory bonus already claimed.',ephemeral=True)
+        conn.execute('UPDATE raid_participation SET victory_claimed=1 WHERE user_id=? AND day=?',(uid,day))
+        conn.execute('UPDATE players SET gold=gold+350,materials=materials+5 WHERE user_id=?',(uid,))
+        conn.commit()
+    await ui_reply(interaction, '🏆 World Boss defeated! Your share: **350 gold and 5 materials**.',ephemeral=True)
 
 # Player-facing interface: /play is the sole slash command. Existing command
 # callbacks remain as internal handlers, preserving the same game rules.
@@ -737,14 +1132,33 @@ def castle_embed(title='THE KINGDOM\'S GATE', detail='Choose your path from the 
     return e
 
 async def open_castle(interaction):
-    await interaction.response.send_message(embed=castle_embed(),file=panel_file('event'),view=PlayMenu(interaction.user.id),ephemeral=True)
+    view=PlayMenu(interaction.user.id) if get_player(interaction.user.id) else RegistrationGate()
+    await ui_reply(interaction, embed=castle_embed(),file=panel_file('event'),view=view,ephemeral=True)
+
+class RegistrationGate(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=900)
+    @discord.ui.button(label='Create Your Fighter', emoji='⚔️', style=discord.ButtonStyle.primary)
+    async def create(self, interaction, button):
+        if get_player(interaction.user.id):
+            return await open_castle(interaction)
+        await interaction.response.send_modal(CreateFighter())
+
+class KingdomEntrance(discord.ui.View):
+    """Persistent shared entry button. Each click opens a private independent UI."""
+    def __init__(self):
+        super().__init__(timeout=None)
+    @discord.ui.button(label='Enter the Kingdom', emoji='🏰', style=discord.ButtonStyle.primary, custom_id='dk:v14:enter_kingdom')
+    async def enter(self, interaction, button):
+        view=PlayMenu(interaction.user.id) if get_player(interaction.user.id) else RegistrationGate()
+        await interaction.response.send_message(embed=castle_embed('YOUR ADVENTURE', 'Create your fighter or choose your next destination.'),file=panel_file('event'),view=view,ephemeral=True)
 
 class OwnedView(discord.ui.View):
     def __init__(self,uid,timeout=900):
         super().__init__(timeout=timeout);self.uid=uid
     async def interaction_check(self,interaction):
         if interaction.user.id!=self.uid:
-            await interaction.response.send_message('This menu belongs to another adventurer. Open your own with `/play`.',ephemeral=True)
+            await ui_reply(interaction, 'This menu belongs to another adventurer. Open your own with `/play`.',ephemeral=True)
             return False
         return True
 
@@ -760,7 +1174,7 @@ class ActionSelect(discord.ui.Select):
         self.uid=uid;self.kind=kind
     async def callback(self,interaction):
         if interaction.user.id!=self.uid:
-            return await interaction.response.send_message('This is another fighter’s menu.',ephemeral=True)
+            return await ui_reply(interaction, 'This is another fighter’s menu.',ephemeral=True)
         value=self.values[0]
         if self.kind=='stats':
             return await interaction.response.send_modal(AllocateModal(value))
@@ -786,7 +1200,7 @@ class AllocateModal(discord.ui.Modal,title='Allocate Attribute Points'):
         try: n=int(str(self.amount))
         except ValueError: n=0
         if not 1<=n<=30:
-            return await interaction.response.send_message('Enter a whole number between 1 and 30.',ephemeral=True)
+            return await ui_reply(interaction, 'Enter a whole number between 1 and 30.',ephemeral=True)
         await allocate.callback(interaction,app_commands.Choice(name=self.attribute.title(),value=self.attribute),n)
 
 class ActionsView(OwnedView):
@@ -814,13 +1228,13 @@ class FighterMenu(OwnedView):
     async def customize_button(self,i,b): await customize.callback(i)
     @discord.ui.button(label='Choose Skill',emoji='🌳',style=discord.ButtonStyle.secondary,row=1)
     async def skill_button(self,i,b): await open_actions(i,'skill')
-    @discord.ui.button(label='Reset Stats',emoji='🔄',style=discord.ButtonStyle.danger,row=2)
-    async def respec_button(self,i,b): await i.response.send_message('Spend one respec token and refund all allocated points?',view=ConfirmRespec(self.uid),ephemeral=True)
+    @discord.ui.button(label='Reset Stats',emoji='🔄',style=discord.ButtonStyle.primary,row=2)
+    async def respec_button(self,i,b): await ui_reply(i, 'Spend one respec token and refund all allocated points?',view=ConfirmRespec(self.uid),ephemeral=True)
     @discord.ui.button(label='Castle Gate',emoji='🏰',style=discord.ButtonStyle.secondary,row=3)
     async def back(self,i,b): await open_castle(i)
 
 class ConfirmRespec(OwnedView):
-    @discord.ui.button(label='Confirm Respec',style=discord.ButtonStyle.danger)
+    @discord.ui.button(label='Confirm Respec',style=discord.ButtonStyle.primary)
     async def confirm(self,i,b): await respec.callback(i)
     @discord.ui.button(label='Cancel',style=discord.ButtonStyle.secondary)
     async def cancel(self,i,b): await open_castle(i)
@@ -854,20 +1268,20 @@ async def open_actions(i,kind):
         'advance':'Advanced forging unlocks at Floor 50 after reaching +10.',
         'upgrade':'Improve equipment using gold and materials.',
     }
-    await i.response.send_message(embed=discord.Embed(title='📜 '+kind.title(),description=descriptions[kind],color=discord.Color.from_rgb(124,89,50)),view=ActionsView(i.user.id,kind),ephemeral=True)
+    await ui_reply(i, embed=discord.Embed(title='📜 '+kind.title(),description=descriptions[kind],color=discord.Color.from_rgb(124,89,50)),view=ActionsView(i.user.id,kind),ephemeral=True)
 
 class PlayMenu(OwnedView):
-    @discord.ui.button(label='Enter Dungeon',emoji='⚔️',style=discord.ButtonStyle.primary,row=0)
+    @discord.ui.button(label='Enter Dungeon',emoji='⚔️',style=discord.ButtonStyle.secondary,row=0)
     async def enter(self,i,b): await dungeon.callback(i)
     @discord.ui.button(label='My Fighter',emoji='🛡️',style=discord.ButtonStyle.secondary,row=0)
-    async def hero(self,i,b): await i.response.send_message(embed=discord.Embed(title='🛡️ Fighter Hall',description='Manage your character, stats, specialization and appearance.',color=discord.Color.from_rgb(124,89,50)),view=FighterMenu(self.uid),ephemeral=True)
+    async def hero(self,i,b): await ui_reply(i, embed=discord.Embed(title='🛡️ Fighter Hall',description='Manage your character, stats, specialization and appearance.',color=discord.Color.from_rgb(124,89,50)),view=FighterMenu(self.uid),ephemeral=True)
     @discord.ui.button(label='Blacksmith',emoji='🔨',style=discord.ButtonStyle.secondary,row=0)
-    async def forge(self,i,b): await i.response.send_message(embed=discord.Embed(title='🔨 Royal Blacksmith',description='Upgrade and enchant your equipment.',color=discord.Color.from_rgb(124,89,50)),view=ForgeMenu(self.uid),ephemeral=True)
+    async def forge(self,i,b): await ui_reply(i, embed=discord.Embed(title='🔨 Royal Blacksmith',description='Upgrade and enchant your equipment.',color=discord.Color.from_rgb(124,89,50)),view=ForgeMenu(self.uid),ephemeral=True)
     @discord.ui.button(label='Gather Resources',emoji='⛏️',style=discord.ButtonStyle.secondary,row=1)
-    async def gather(self,i,b): await i.response.send_message(embed=discord.Embed(title='⛏️ The Kingdom Outskirts',description='Earn gold and materials. Stamina regenerates over time.',color=discord.Color.from_rgb(124,89,50)),view=GatherMenu(self.uid),ephemeral=True)
+    async def gather(self,i,b): await ui_reply(i, embed=discord.Embed(title='⛏️ The Kingdom Outskirts',description='Earn gold and materials. Stamina regenerates over time.',color=discord.Color.from_rgb(124,89,50)),view=GatherMenu(self.uid),ephemeral=True)
     @discord.ui.button(label='Treasury',emoji='🪙',style=discord.ButtonStyle.secondary,row=1)
     async def treasury(self,i,b): await wallet.callback(i)
-    @discord.ui.button(label='Championship Arena',emoji='🏟️',style=discord.ButtonStyle.primary,row=1)
+    @discord.ui.button(label='Championship Arena',emoji='🏟️',style=discord.ButtonStyle.secondary,row=1)
     async def arena_button(self,i,b): await ARENA_COMMAND.callback(i)
     @discord.ui.button(label='Rankings',emoji='🏆',style=discord.ButtonStyle.secondary,row=2)
     async def rankings(self,i,b): await leaderboard.callback(i)
@@ -875,15 +1289,19 @@ class PlayMenu(OwnedView):
     async def score(self,i,b): await ARENA_SCORE_COMMAND.callback(i)
     @discord.ui.button(label='Rules & Dates',emoji='📜',style=discord.ButtonStyle.secondary,row=2)
     async def rules(self,i,b): await event.callback(i)
-    @discord.ui.button(label='Create Fighter',emoji='🧙',style=discord.ButtonStyle.success,row=3)
-    async def create(self,i,b): await register.callback(i)
+    @discord.ui.button(label='World Raid',emoji='🐉',style=discord.ButtonStyle.secondary,row=3)
+    async def raid(self,i,b): await raid_menu(i)
+    @discord.ui.button(label='Wandering Merchant',emoji='🪙',style=discord.ButtonStyle.secondary,row=3)
+    async def merchant(self,i,b): await merchant_menu(i)
+    @discord.ui.button(label='Return to Castle',emoji='🏰',style=discord.ButtonStyle.secondary,row=4)
+    async def create(self,i,b): await open_castle(i)
 
 ARENA_COMMAND=bot.tree.get_command('arena')
 ARENA_SCORE_COMMAND=bot.tree.get_command('arena-score')
 
 @bot.tree.command(name='play',description='Open the Dungeon Kombat castle gate and all game functions')
 async def play(interaction:discord.Interaction):
-    await open_castle(interaction)
+    await interaction.response.send_message(embed=castle_embed('THE KINGDOM ENTRANCE', 'All adventurers can use the button below. Your character and menus open privately, so players never control each other’s progress.'),file=panel_file('event'),view=KingdomEntrance())
 
 # The only visible slash command is /play. All original handlers remain
 # callable by the UI, including the separately installed arena module.
@@ -906,6 +1324,7 @@ async def setup_commands():
 
 @bot.event
 async def setup_hook():
+    bot.add_view(KingdomEntrance())
     await setup_commands()
 
 if __name__=='__main__':

@@ -111,10 +111,15 @@ def arena_file(challenge,turn):
     return _file(img,'arena-scene.png')
 
 def panel_file(kind,progress=0):
-    palette={'event':((211,152,72),(29,19,30),'THE DUNGEON AWAITS','SEVEN DAYS • ONE HUNDRED FLOORS'),
+    palette={'doors':((175,120,63),(28,21,19),'THE THREE DOORS','IRON • GOLD • RUNES'),
+             'treasure':((211,169,83),(31,23,17),'THE FORGOTTEN TREASURY','CHOOSE YOUR REWARD'),
+             'merchant':((172,126,69),(30,23,17),'THE WANDERING MERCHANT','THE KINGDOM TRADES HERE'),
+             'elite':((171,93,62),(30,20,19),'THE IRON GUARDIAN','THREE TACTICAL TRIALS'),
+             'event':((211,152,72),(29,19,30),'THE DUNGEON AWAITS','SEVEN DAYS • ONE HUNDRED FLOORS'),
              'workshop':((198,125,66),(30,21,21),'THE FORGE','CRAFT • UPGRADE • EVOLVE'),
              'wallet':((207,170,80),(31,24,22),'TREASURY','GOLD • MATERIALS • EQUIPMENT'),
              'leaderboard':((203,170,92),(23,20,33),'HALL OF CHAMPIONS','THE TOP THREE WILL BE REMEMBERED'),
+             'raid':((180,95,63),(33,20,17),'THE KINGDOM IS UNDER SIEGE','WORLD BOSS • STAND TOGETHER'),
              'fighter':((96,154,193),(17,25,39),'THE ADVENTURER','YOUR LEGEND IS STILL BEING WRITTEN'),
              'arena':((171,114,220),(23,17,40),'CHAMPIONSHIP ARENA','FIVE TRIALS • FIVE HUNDRED POINTS')}
     accent,dark,title,sub=palette[kind]
