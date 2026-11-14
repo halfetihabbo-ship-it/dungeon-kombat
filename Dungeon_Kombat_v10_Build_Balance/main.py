@@ -1,4 +1,4 @@
-"""Dungeon Kombat — solo 100-floor Discord dungeon tournament.
+"""Dungeon Kombat — seven-day endless-floor Discord dungeon tournament.
 Python 3.11+, discord.py 2.4+, Pillow. All database writes are serialized.
 """
 import asyncio
@@ -15,7 +15,6 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 from PIL import Image, ImageDraw, ImageFont
-from arena import install as install_arena
 from visuals import floor_file, panel_file
 
 TOKEN = os.getenv('DISCORD_TOKEN', '')
@@ -23,8 +22,6 @@ GUILD_ID = os.getenv('GUILD_ID', '')
 DB_PATH = os.getenv('DATABASE_PATH', '/data/dungeon_kombat.db' if Path('/data').exists() else 'dungeon_kombat.db')
 START_DATE = os.getenv('EVENT_START_DATE', '2026-11-14')  # UTC, inclusive
 DAYS = 7
-DAILY_ATTEMPTS = 20
-MAX_ATTEMPTS = 140
 STAMINA_CAP = 45
 STAMINA_DAILY = 15
 STAMINA_REGEN_SECONDS = 2 * 60 * 60
@@ -240,11 +237,7 @@ def get_battle(uid):
     return conn.execute('SELECT * FROM battles WHERE user_id=?', (uid,)).fetchone()
 
 def grant_attempts(uid):
-    p = get_player(uid)
-    day = min(DAYS, max(0, event_day()))
-    if day > p['granted_days']:
-        added = (day - p['granted_days']) * DAILY_ATTEMPTS
-        conn.execute('UPDATE players SET attempts=MIN(?,attempts+?),granted_days=? WHERE user_id=?', (MAX_ATTEMPTS, added, day, uid))
+    # Compatibility shim: dungeon attempts are unlimited; never change legacy balances.
     return get_player(uid)
 
 def grant_stamina(uid, now=None):
@@ -307,7 +300,7 @@ def stats(p):
     defense+=p['armor_advanced']*4
     atk+=p['weapon_advanced']*8
     if p['skill']=='Berserker': atk=round(atk*1.15);hp=round(hp*1.21)
-    elif p['skill']=='Guardian': defense=round(defense*1.05);atk=round(atk*1.02)
+    elif p['skill']=='Guardian': defense=round(defense*1.12);hp=round(hp*1.10);atk=round(atk*1.02)
     elif p['skill']=='Arcanist': energy+=20;atk=round(atk*1.05);hp=round(hp*1.05)
     hp=round(hp*(1+min(p['relics'],10)*.005))
     if p['enchantment']=='Flame': atk=round(atk*1.035)
@@ -319,37 +312,45 @@ def stats(p):
     weapon_item=COLLECTIBLES.get(p['equipped_weapon'])
     armor_item=COLLECTIBLES.get(p['equipped_armor'])
     if weapon_item and weapon_item[0]=='weapon':atk=round(atk*(1+weapon_item[2]))
-    if armor_item and armor_item[0]=='armor':hp=round(hp*(1+armor_item[3]))
+    if armor_item and armor_item[0]=='armor':
+        # Armour collection: some pieces favour HP, others protection. No stacking.
+        hp=round(hp*(1+min(.035,armor_item[3])))
+        if armor_item[3]>=.023: defense=round(defense*(1+min(.025,armor_item[3]*.70)))
     return hp,atk,defense,speed,energy
 
 def enemy_stats(floor):
-    boss=floor%10==0
-    hp=round((72+9*floor+.10*floor**2)*(1.52 if boss else 1))
-    attack=round((10+.82*floor+.003*floor**2)*(1.18 if boss else 1))
-    defense=round((4+.28*floor)*(1.15 if boss else 1))
-    progress=(floor/100)**1.25
-    hp=round(hp*(1+.05*progress))
-    attack=round(attack*(.95+.05*progress))
-    if floor>=35 and not boss:
-        late=(floor-35)/65
-        hp=round(hp*(1+.08*late));attack=round(attack*(1+.07*late))
+    """Endless scaling: a reachable first 100, then increasingly steep walls.
+
+    All bonuses are computed from floor, so restarting the bot cannot alter difficulty.
+    """
+    boss = floor % 10 == 0
+    hp = 72 + 9*floor + .10*floor**2
+    attack = 10 + .82*floor + .003*floor**2
+    defense = 4 + .28*floor
+    hp *= 1.07 * (1 + .065*min(1,max(0,(floor-40)/60)))
+    if floor>=35:
+        late=min(1,max(0,(floor-35)/65))
+        hp *= 1+.06*late
+        attack *= 1+.055*late
+    # Beyond floor 100, scaling accelerates while player upgrades remain capped.
+    over=max(0,floor-100)
+    hp *= (1+.019*over+.00023*over**2)
+    attack *= (1+.011*over+.00011*over**2)
+    defense *= (1+.006*over)
     if boss:
-        tier=floor//10
-        hp=round(hp*(1.02+.007*tier))
-        attack=round(attack*(.98+.003*tier))
-        hp=round(hp*(1.18 if 20<=floor<=80 else (1.05 if floor==90 else .90)))
-        attack=round(attack*(1.09 if 20<=floor<=80 else (.99 if floor==90 else .84)))
-    hp=round(hp*1.07)  # original HP pressure
-    # v17: progressively tougher late-game encounters, without an early-floor difficulty spike.
-    # The additional HP reaches 8.5% at Floor 100; enemy attack remains unchanged.
-    hp=round(hp*(1+0.085*max(0,min(1,(floor-40)/60))))
-    return hp,attack,defense,boss
+        hp *= 1.52*(1.06+.003*min(floor//10,10))
+        attack *= 1.18*(1.04+.002*min(floor//10,10))
+        defense *= 1.15
+        # Predictable boss counterplay is more important than lucky retries.
+        if floor>=110:
+            hp *= 1.07
+    return round(hp),round(attack),round(defense),boss
 
 def reward_for_floor(floor):
     """Deterministic first-clear rewards; boss chests include extra gold/materials."""
-    band = (floor - 1) // 10
-    gold = 90 + 12*floor + 15*band
-    mats = 1 + floor // 40
+    band = min(10,(floor - 1) // 10)
+    gold = 90 + 12*min(floor,110) + 15*band
+    mats = 1 + min(floor,120) // 40
     if floor % 10 == 0:
         gold += 350 + 60*band
         mats += 6 + band
@@ -357,7 +358,7 @@ def reward_for_floor(floor):
 
 # Adventure encounters are first-clear only. No extra dungeon attempts are spent.
 def encounter_kind(floor):
-    if floor % 10 == 0 and floor < 100: return 'doors'
+    if floor % 10 == 0: return 'doors'
     if floor % 5 == 0 and floor % 10 != 0: return 'treasure'
     return None
 
@@ -410,10 +411,10 @@ def free_points(p):
 
 def info_embed(p):
     hp, atk, defense, speed, energy = stats(p)
-    e = discord.Embed(title=f'⚔️ {p["name"]}', description=f'Floor **{p["floor"]}/100** • {TIERS[min(p["floor"]//10,9)]}', color=discord.Color.dark_red())
+    e = discord.Embed(title=f'⚔️ {p["name"]}', description=f'Floor **{p["floor"]}** • {TIERS[min(p["floor"]//10,9)]}', color=discord.Color.dark_red())
     e.add_field(name='Combat stats', value=f'❤️ {hp} HP\n⚔️ {atk} ATK\n🛡️ {defense} DEF\n⚡ {speed} SPD\n🔮 {energy} Energy')
     e.add_field(name='Equipment', value=f'{p["weapon"]} • Stage {p["weapon_stage"]+1} • +{p["weapon_upgrade"]} (Advanced +{p["weapon_advanced"]})\nArmour +{p["armor_upgrade"]} (Advanced +{p["armor_advanced"]})')
-    e.add_field(name='Progress', value=f'⭐ {free_points(p)} unspent stat points\n🪙 {p["gold"]} gold\n🔩 {p["materials"]} materials\n🎟️ {p["attempts"]} attempts\n⛏️ {p["stamina"]}/45 activity stamina\n🕒 {stamina_next_regen(p)}\n🌳 {p["skill"]} • 🔮 {p["enchantment"]} • 🏅 {p["relics"]} relics')
+    e.add_field(name='Progress', value=f'⭐ {free_points(p)} unspent stat points\n🪙 {p["gold"]} gold\n🔩 {p["materials"]} materials\n♾️ Unlimited dungeon attempts\n⛏️ {p["stamina"]}/45 activity stamina\n🕒 {stamina_next_regen(p)}\n🌳 {p["skill"]} • 🔮 {p["enchantment"]} • 🏅 {p["relics"]} relics')
     e.add_field(name='Royal Armoury',value=f'🗡️ {p["equipped_weapon"]} • 🛡️ {p["equipped_armor"]}',inline=False)
     if p['floor']>=5 and p['skill']=='None':e.add_field(name='🌳 Action needed: Choose Fighter Build',value='Open **My Fighter → Choose Skill** to select Berserker, Guardian or Arcanist. This choice is permanent.',inline=False)
     e.set_footer(text=f'Day {max(0,min(DAYS,event_day()))}/{DAYS} • Solo tournament • UTC')
@@ -624,7 +625,7 @@ class DungeonResultView(discord.ui.View):
 def battle_embed(p, b, message=None):
     maxhp, atk, defense, speed, maxenergy = stats(p)
     enemyhp, enemyatk, enemydef, boss = enemy_stats(b['floor'])
-    e = discord.Embed(title=f'⚔️ Floor {b["floor"]} — {"BOSS" if boss else "Monster"}', description=f'**{TIERS[(b["floor"]-1)//10]}**\n{message or b["log"]}', color=discord.Color.red() if boss else discord.Color.dark_blue())
+    e = discord.Embed(title=f'⚔️ Floor {b["floor"]} — {"BOSS" if boss else "Monster"}', description=f'**{TIERS[min((b["floor"]-1)//10,9)]}**\n{message or b["log"]}', color=discord.Color.red() if boss else discord.Color.dark_blue())
     e.add_field(name=f'🧍 {p["name"]}', value=f'❤️ {b["hp"]}/{maxhp}\n🔮 {b["energy"]}/{maxenergy}\n💚 {b["potions"]} potions')
     e.add_field(name='💀 Enemy', value=f'❤️ {b["enemy_hp"]}/{enemyhp}\n⚔️ {enemyatk} ATK\n🛡️ {enemydef} DEF' + ('\n🛡️ Shielded: normal attacks effective' if boss and b['floor']>=20 and b['turn']%5 in (1,2) else ''))
     e.add_field(name='Turn', value=f'{b["turn"]}/{30 if boss else 20} • Special cooldown: {b["special_cd"]}' + (f' • 🔥 Boss enrage +{(b["turn"]-8)*10}% incoming damage' if boss and b['turn']>8 else ''), inline=False)
@@ -632,11 +633,11 @@ def battle_embed(p, b, message=None):
     e.add_field(name='📜 Enemy Intention',value=INTENT_TEXT[intent],inline=False)
     if boss:
         phase=boss_phase(b)
-        e.add_field(name='👑 Boss',value=f'{BOSS_NAMES[(b["floor"]//10)-1]} • Phase {phase}/3' + (' • Final Stand: higher damage, exposed openings' if phase==3 else ''),inline=False)
+        e.add_field(name='👑 Boss',value=f'{BOSS_NAMES[((b["floor"]//10)-1)%len(BOSS_NAMES)]} • Phase {phase}/3' + (' • Final Stand: higher damage, exposed openings' if phase==3 else ''),inline=False)
     if b['poisoned']:
         e.add_field(name='☠️ Poison', value=f'{b["poisoned"]} turns remaining', inline=False)
     e.set_image(url="attachment://dungeon-floor.png")
-    e.set_footer(text=f"Zone {(b['floor']-1)//10+1}/10 • {'BOSS ENCOUNTER' if boss else 'DUNGEON ENCOUNTER'} • Every floor has its own scene")
+    e.set_footer(text=f"Zone {(b['floor']-1)//10+1} • {'BOSS ENCOUNTER' if boss else 'DUNGEON ENCOUNTER'} • Every floor has its own scene")
     return e
 
 async def resolve_action(interaction, action):
@@ -756,13 +757,13 @@ async def resolve_action(interaction, action):
                 conn.execute('INSERT OR IGNORE INTO dungeon_encounters(user_id,floor,kind) VALUES(?,?,?)',(interaction.user.id,floor,kind))
                 notes.append('📜 A new castle encounter awaits! Choose **Next Floor** to resolve it.')
             conn.execute('UPDATE players SET blessing_floors=MAX(0,blessing_floors-1) WHERE user_id=?',(interaction.user.id,))
-            if boss:
+            if boss and floor<=100:
                 conn.execute('UPDATE players SET relics=relics+1 WHERE user_id=?',(interaction.user.id,))
                 notes.append('🏅 Earned a permanent boss relic (+0.5% maximum HP).')
         elif lost:
             conn.execute('UPDATE players SET losses=losses+1 WHERE user_id=?',(interaction.user.id,))
             conn.execute('DELETE FROM battles WHERE user_id=?',(interaction.user.id,))
-            notes.append('💀 **DEFEAT.** This attempt is spent, but your completed floors are safe.')
+            notes.append('💀 **DEFEAT.** Retry immediately with unlimited attempts. Cleared floors remain safe; no first-clear rewards are granted.')
         else:
             conn.execute('UPDATE battles SET hp=?,energy=?,potions=?,enemy_hp=?,turn=?,guarding=?,focused=?,enemy_charge=?,poisoned=?,special_cd=?,log=? WHERE user_id=?', (hp,energy,potions,enemyhp,nextturn,int(guard),focused,charge,poison,cooldown,'\n'.join(notes),interaction.user.id))
         conn.commit()
@@ -772,7 +773,7 @@ async def resolve_action(interaction, action):
             embed = battle_embed(p,b2,'\n'.join(notes))
         else:
             embed = discord.Embed(title='🏆 Dungeon cleared!' if won else '💀 Dungeon failed', description='\n'.join(notes), color=discord.Color.green() if won else discord.Color.red())
-            embed.add_field(name='Progress',value=f'Highest floor: **{p["floor"]}/100**\nRemaining attempts: **{p["attempts"]}**')
+            embed.add_field(name='Progress',value=f'Highest completed floor: **{p["floor"]}**\nAttempts: **Unlimited**')
             embed.set_image(url='attachment://dungeon-floor.png')
     # The original ephemeral message may no longer be editable after restarts; respond with a fresh panel.
     await ui_reply(interaction, embed=embed,file=floor_file(b2['floor'] if b2 else b['floor']),view=BattleView(interaction.user.id) if b2 else DungeonResultView(interaction.user.id, won),ephemeral=True)
@@ -932,14 +933,12 @@ async def dungeon(interaction: discord.Interaction):
             if event_state()!='active':
                 return await ui_reply(interaction, 'Dungeon attempts are available only during the seven-day event. Check `/event`.',ephemeral=True)
             p = grant_attempts(interaction.user.id)
-            if p['floor']>=100: return await ui_reply(interaction, '🏆 You have cleared all 100 dungeon floors!',ephemeral=True)
-            if p['attempts']<=0: return await ui_reply(interaction, 'No attempts remaining. New attempts unlock at 00:00 UTC each event day.',ephemeral=True)
             floor = p['floor']+1
             enemyhp,_,_,_ = enemy_stats(floor)
             hp,_,_,_,energy = stats(p)
             seed = random.SystemRandom().randint(1,2**31-1)
             conn.execute('INSERT INTO battles(user_id,floor,hp,energy,potions,enemy_hp,seed) VALUES(?,?,?,?,?,?,?)',(interaction.user.id,floor,hp,energy,3,enemyhp,seed))
-            conn.execute('UPDATE players SET attempts=attempts-1,spent=spent+1 WHERE user_id=?',(interaction.user.id,))
+            conn.execute('UPDATE players SET spent=spent+1 WHERE user_id=?',(interaction.user.id,))
             b = get_battle(interaction.user.id)
             embed = battle_embed(p,b,'A monster blocks your path! Choose your first action.')
         conn.commit()
@@ -1021,28 +1020,28 @@ async def advance(interaction:discord.Interaction,item:app_commands.Choice[str])
         conn.execute(f'UPDATE players SET {key}={key}+1,gold=gold-?,materials=materials-? WHERE user_id=?',(gold,mats,interaction.user.id));conn.commit()
     await ui_reply(interaction, f'🔨 {item.name} advanced to **+{lvl+1}** for {gold:,} gold and {mats} materials.',ephemeral=True)
 
-arena_system = install_arena(bot, conn, lock, get_player, event_day, lambda i: open_castle(i))
+# Championship Arena retired; historical arena data remains untouched.
 
 @bot.tree.command(name='leaderboard',description='View the solo dungeon tournament rankings')
 async def leaderboard(interaction: discord.Interaction):
-    rows = conn.execute('SELECT p.user_id,p.name,p.floor,p.spent,p.losses,p.total_turns,\n        COALESCE(SUM(a.score),0) AS arena_points,\n        COALESCE(SUM(CASE WHEN a.turn=4 THEN 1 ELSE 0 END),0) AS arena_done\n        FROM players p LEFT JOIN arena_runs a ON a.user_id=p.user_id\n        GROUP BY p.user_id\n        ORDER BY CASE WHEN p.floor=100 AND COALESCE(SUM(CASE WHEN a.turn=4 THEN 1 ELSE 0 END),0)=5 THEN 1 ELSE 0 END DESC,\n        CASE WHEN p.floor=100 AND COALESCE(SUM(CASE WHEN a.turn=4 THEN 1 ELSE 0 END),0)=5 THEN COALESCE(SUM(a.score),0) ELSE 0 END DESC,\n        p.floor DESC,p.spent ASC,p.losses ASC,p.total_turns ASC,p.user_id ASC LIMIT 15').fetchall()
-    e = discord.Embed(title='🏆 Dungeon Kombat Leaderboard',description='Completed Championship Arena scores rank first (out of 500); then dungeon floor and efficiency. Arena qualifiers have two extra days to finish.',color=discord.Color.gold())
+    rows = conn.execute("""SELECT user_id,name,floor,spent,losses,total_turns
+        FROM players ORDER BY floor DESC, losses ASC, spent ASC,
+        total_turns ASC, user_id ASC LIMIT 15""").fetchall()
+    e=discord.Embed(title='🏆 Endless Dungeon Rankings',description='Highest completed floor wins. Ties: fewer defeats, then fewer attempts, then fewer turns.',color=discord.Color.gold())
     if not rows: e.description='No fighters have registered yet.'
     else:
         for i,p in enumerate(rows):
-            arena_text = f' • 🏟️ **{p["arena_points"]}/500**' if p['arena_done']==5 else (f' • Arena {p["arena_done"]}/5' if p['arena_done'] else '')
-            e.add_field(name=f'{["🥇","🥈","🥉"][i] if i<3 else str(i+1)+"."} {p["name"]}',value=f'Floor **{p["floor"]}/100** • {p["spent"]} attempts{arena_text}',inline=False)
+            e.add_field(name=f'{["🥇","🥈","🥉"][i] if i<3 else str(i+1)+"."} {p["name"]}',value=f'Floor **{p["floor"]}** • {p["losses"]} defeats • {p["spent"]} attempts',inline=False)
     e.set_image(url="attachment://dungeon-panel.png")
     await ui_reply(interaction, embed=e,file=panel_file("leaderboard"),ephemeral=False)
 
 @bot.tree.command(name='event',description='View the tournament dates and rules')
 async def event(interaction: discord.Interaction):
-    e=discord.Embed(title='🏰 Dungeon Kombat: The Kingdom Trials',description=f'**Start (UTC):** {START_DATE}\n**Duration:** 7 days\n**Status:** {event_state().title()}\n**Current day:** {event_day()}\n**Goal:** Clear as many of 100 solo dungeon floors as possible.',color=discord.Color.orange())
-    e.add_field(name='Attempts',value='20 new attempts per day; unused attempts carry over. Max 140 total.')
-    e.add_field(name='Combat',value='Turn-based: Attack, Defend, Special, Heal, Focus. Boss every 10 floors.')
-    e.add_field(name='Ranking',value='Clear Floor 100 to unlock five Arena challenges worth 500 total points. Arena completion and score determine the champions; dungeon progress and efficiency break ties.',inline=False)
-    e.add_field(name='Arena window',value='Arena is open on event days 1–9, including two days after the dungeon closes.',inline=False)
-    e.add_field(name='Rewards',value='First-clear rewards and boss relics. `/activities` earns extra resources using 15 daily stamina plus +1 regeneration every 2 hours (cap 45). `/skill` unlocks after Floor 5, `/enchant` after Floor 30 and `/advance` after Floor 50.',inline=False)
+    e=discord.Embed(title='🏰 Dungeon Kombat: The Endless Dungeon',description=f'**Start (UTC):** {START_DATE}\n**Duration:** 7 days\n**Status:** {event_state().title()}\n**Current day:** {event_day()}\n**Goal:** Reach the highest completed floor. Top three win.',color=discord.Color.orange())
+    e.add_field(name='Attempts',value='Unlimited dungeon attempts. Failed floors can be retried immediately.')
+    e.add_field(name='Combat',value='Attack, Defend, Special, Heal and Focus. Boss every ten floors. Enemy strength scales endlessly.')
+    e.add_field(name='Ranking',value='Highest floor wins; ties use fewer defeats, fewer attempts and fewer total turns.',inline=False)
+    e.add_field(name='Rewards',value='First-clear loot and milestone items, capped forging, gathering, daily missions and Royal Bounties.',inline=False)
     e.set_image(url="attachment://dungeon-panel.png")
     await ui_reply(interaction, embed=e,file=panel_file("event"),ephemeral=True)
 
@@ -1187,7 +1186,7 @@ async def merchant_menu(interaction):
     p=get_player(interaction.user.id)
     if not p:return await ui_reply(interaction, 'Create a fighter first.',ephemeral=True)
     floor=(p['floor']//10)*10
-    if floor<10 or floor>=100:
+    if floor<10:
         return await ui_reply(interaction, 'The Wandering Merchant visits after boss floors 10–90.',ephemeral=True)
     if get_battle(interaction.user.id):
         return await ui_reply(interaction, 'Finish your battle before visiting the merchant.',ephemeral=True)
@@ -1257,30 +1256,24 @@ class RegistrationGate(discord.ui.View):
 
 GUIDE_PAGES=(
  ('Welcome & Tournament Rules',
-  '**Your objective:** Clear 100 solo dungeon floors in seven days, then compete in the Championship Arena for the top three places.\n\n'
-  '**Getting started**\n1. Create your fighter and choose your appearance and starting weapon class.\n2. Enter the dungeon and clear floors in order.\n3. Spend stat points, improve equipment and gather resources.\n4. At Floor 5, choose a permanent fighter build.\n5. Reach Floor 100 to qualify for the Arena.\n\n'
-  '**Tournament:** 7 dungeon days starting '+START_DATE+' (UTC). The Arena has an additional two-day window. Your progress is saved automatically.'),
- ('Dungeon Battles & Attempts',
-  '**Attempts:** 20 new dungeon attempts each day, unused attempts carry forward, up to 140 across the event. Starting a floor spends an attempt; losing does not erase cleared floors.\n\n'
-  '**Combat buttons**\n⚔️ **Attack** — deal damage and recover some energy.\n🛡️ **Defend** — reduce incoming damage; especially useful against heavy or venom attacks.\n🔥 **Special** — powerful weapon-based attack; uses 28 energy and has a cooldown.\n💚 **Heal** — consume one of your battle potions to recover HP.\n⚡ **Focus** — regain energy and strengthen the next attack.\n\n'
-  'Read the **Enemy Intention** before each turn. Bosses appear every 10 floors and have multiple phases. The fight can be resumed from the dungeon menu.'),
- ('Fighter Builds, Stats & Equipment',
-  '**At Floor 5, choose ONE permanent build:**\n⚔️ **Berserker:** +15% attack, +21% HP.\n🛡️ **Guardian:** +5% defence, +2% attack.\n🔮 **Arcanist:** +20 energy, +5% attack and HP.\n\n'
-  '**Stats:** Each cleared floor grants 3 stat points. Allocate them in My Fighter. Bosses grant respec tokens.\n\n'
-  '**Weapon classes:** Sword, Axe, Daggers, Staff or Spear; each has its own special attack.\n'
-  '**Collectibles:** 35 named weapons and armour pieces. Equip one collectible weapon and one armour piece in My Fighter → Equipment Collection. Bonuses are small and do not replace your starting weapon class.\n'
-  '**Blacksmith:** Buy basic upgrades, advanced forging (Floor 50 after +10), enchantments (Floor 30) or craft collectible equipment.'),
- ('Loot, Bounties & Kingdom',
-  '**How to collect equipment**\n🎁 **Milestones:** Guaranteed pieces on selected floors.\n💎 **Dungeon loot:** 22% chance per first successful floor clear, with Common through Legendary rarity; duplicates are possible.\n🔨 **Crafting:** Eight recipes unlocked at certain floors; spend gold and materials.\n🎯 **Royal Bounty:** Unlock at Floor 5. Up to 3 challenges daily; counter at least 2 of 3 telegraphed moves to win 300 gold, 5 materials and an unowned collectible (if available).\n\n'
-  '**Gathering:** Spend activity stamina in the Gold Mine, Crystal Cavern or Ancient Ruins. You gain 15 stamina daily and +1 every two hours, up to 45.\n'
-  '**Daily Missions:** Defeat 5 dungeon enemies, complete 3 gathering activities and defeat the Royal Bounty. Claim each reward and the all-three completion bonus.\n'
-  '**Kingdom Events:** Daily resource bonuses rotate at 00:00 UTC. Explore merchants, treasure chambers and the Three Doors for extra rewards.'),
- ('Championship Arena, Rankings & Tips',
-  '**Qualify:** Clear Floor 100 during the seven-day dungeon event.\n'
-  '**Arena:** Five tactical challenges, up to 500 points total. The Arena remains open for two additional days after the dungeon period.\n'
-  '**Final ranking:** Completed Arena scores rank first; dungeon floor and efficiency act as tiebreakers. The competition awards 1st, 2nd and 3rd place.\n\n'
-  '**Tips for success**\n• Use your daily attempts and gathering stamina consistently.\n• Choose your fighter build as soon as it unlocks.\n• Upgrade and equip better gear before difficult bosses.\n• Read enemy intentions; defending can be stronger than attacking.\n• Claim Daily Missions and Royal Bounties for resources and gear.\n\n'
-  '**Navigation:** Use the Castle Gate button to return to your private menu. The shared public entrance never lets other players control your fighter.'),
+  '**Objective:** Climb as high as possible during seven days. There is no final floor and no Championship Arena. The three highest completed floors win.\n\n'
+  '**Getting started:** Create a fighter, enter the dungeon, upgrade gear, gather resources and choose a permanent build after Floor 5.\n\n'
+  '**Tie-breakers:** Fewer defeats, then fewer attempts, then fewer total combat turns. Progress saves automatically. Event begins '+START_DATE+' UTC.'),
+ ('Dungeon Combat & Unlimited Attempts',
+  '**Unlimited attempts:** Retry failed floors immediately. Losses do not erase progress. Only first clears grant floor rewards.\n\n'
+  '⚔️ **Attack:** Damage and energy recovery.\n🛡️ **Defend:** Reduces incoming damage.\n🔥 **Special:** Weapon-based attack using energy and cooldown.\n💚 **Heal:** Three potions per battle.\n⚡ **Focus:** Recover energy and empower your next strike.\n\n'
+  'Watch enemy intentions. Bosses appear every ten floors, have multiple phases and become tougher beyond Floor 100.'),
+ ('Builds, Weapons & Armour',
+  '**Choose one permanent build at Floor 5:**\n⚔️ Berserker: +15% attack, +21% HP.\n🛡️ Guardian: +12% defence, +10% HP, +2% attack.\n🔮 Arcanist: +20 energy, +5% attack and HP.\n\n'
+  'Each floor grants three stat points. Equip only one collectible weapon and one armour piece at a time. Collectibles grant small bonuses; armour can favour HP or defence.\n'
+  'Blacksmith upgrades stop at +10 basic and +5 advanced. Weapon classes: Sword, Axe, Daggers, Staff and Spear.'),
+ ('Loot, Crafting & Royal Bounties',
+  '🎁 **Milestones:** Guaranteed equipment at certain floors.\n💎 **Loot:** 22% chance per first clear; Common through Legendary.\n🔨 **Crafting:** Eight recipes consume gold and materials; owned items cannot be crafted repeatedly.\n🎯 **Royal Bounties:** Up to three daily tactical challenges; win an unowned collectible.\n\n'
+  'Gather with stamina, complete three daily missions and claim the completion bonus. No failed-floor reward farming.'),
+ ('Endless Rankings & Strategy',
+  '**Rankings:** Highest completed floor after seven days wins. Second and third place are the next highest floors. Ties: fewer defeats, fewer attempts, fewer turns.\n\n'
+  '**Tips:** Upgrade before boss floors, read attack telegraphs, choose equipment for your build, and collect mission rewards. After Floor 100, difficulty scales faster than equipment.\n\n'
+  'All menus are private to the player; the public entrance remains shared.'),
 )
 
 def guide_embed(page):
@@ -1362,7 +1355,7 @@ class ActionSelect(discord.ui.Select):
 
 BUILD_DESCRIPTIONS={
     'Berserker':'⚔️ Aggressive fighter — **+15% attack and +21% HP**. Strong damage with enough survivability for bosses.',
-    'Guardian':'🛡️ Defensive fighter — **+5% defence and +2% attack**. Focuses on surviving tough encounters.',
+    'Guardian':'🛡️ Defensive fighter — **+12% defence, +10% HP and +2% attack**. Focuses on surviving tough encounters.',
     'Arcanist':'🔮 Balanced magic fighter — **+20 energy, +5% attack and +5% HP**. More ability flexibility.',
 }
 
@@ -1703,7 +1696,7 @@ class PlayMenu(OwnedView):
         super().__init__(uid)
         player=get_player(uid)
         if player and player['floor']>=5 and player['skill']=='None':self.add_item(ChooseBuildButton())
-        if player and player['floor']>=100:self.add_item(ArenaEntryButton())
+        # No Arena: rankings depend only on endless dungeon progress.
     @discord.ui.button(label='Enter Dungeon',emoji='⚔️',style=discord.ButtonStyle.primary,row=0)
     async def enter(self,i,b):await dungeon.callback(i)
     @discord.ui.button(label='My Fighter',emoji='🛡️',style=discord.ButtonStyle.secondary,row=0)
@@ -1713,33 +1706,12 @@ class PlayMenu(OwnedView):
     @discord.ui.button(label='Rules & Guide',emoji='📜',style=discord.ButtonStyle.secondary,row=1)
     async def rules(self,i,b):await show_guide(i,0)
 
-class ArenaEntryButton(discord.ui.Button):
-    def __init__(self):
-        super().__init__(label='Championship Arena',emoji='🏟️',style=discord.ButtonStyle.primary,row=2)
-    async def callback(self,interaction):
-        # Revalidate server-side: a visible button never grants arena access.
-        player=get_player(interaction.user.id)
-        if not player or player['floor'] < 100:
-            return await ui_reply(interaction,'🔒 Clear all 100 dungeon floors to qualify.',ephemeral=True)
-        await ui_reply(interaction,embed=discord.Embed(title='🏟️ Championship Arena',description='You have conquered Floor 100. Enter your tactical challenges or review your Arena score.',color=discord.Color.from_rgb(124,89,50)),view=ArenaMenu(interaction.user.id),ephemeral=True)
-
-class ArenaMenu(OwnedView):
-    @discord.ui.button(label='Enter Arena',emoji='⚔️',style=discord.ButtonStyle.primary,row=0)
-    async def enter(self,i,b): await ARENA_COMMAND.callback(i)
-    @discord.ui.button(label='My Arena Score',emoji='🎯',style=discord.ButtonStyle.secondary,row=0)
-    async def score(self,i,b): await ARENA_SCORE_COMMAND.callback(i)
-    @discord.ui.button(label='Castle Gate',emoji='🏰',style=discord.ButtonStyle.secondary,row=1)
-    async def back(self,i,b): await open_castle(i)
-
-ARENA_COMMAND=bot.tree.get_command('arena')
-ARENA_SCORE_COMMAND=bot.tree.get_command('arena-score')
-
 @bot.tree.command(name='play',description='Open the Dungeon Kombat castle gate and all game functions')
 async def play(interaction:discord.Interaction):
     await interaction.response.send_message(embed=castle_embed('THE KINGDOM ENTRANCE', 'All adventurers can use the button below. Your character and menus open privately, so players never control each other’s progress.'),file=panel_file('event'),view=KingdomEntrance())
 
 # The only visible slash command is /play. All original handlers remain
-# callable by the UI, including the separately installed arena module.
+# callable by the UI, with no Championship Arena.
 for _cmd in list(bot.tree.get_commands()):
     if _cmd.name!='play': bot.tree.remove_command(_cmd.name)
 

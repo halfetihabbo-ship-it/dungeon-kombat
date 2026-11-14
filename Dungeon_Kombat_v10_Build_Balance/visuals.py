@@ -102,7 +102,7 @@ def _file(img,name):
 
 def floor_file(floor):
     idx=min(9,max(0,(floor-1)//10));name,accent,dark,_=THEMES[idx]
-    img=scene(name,f'FLOOR {floor:03d} / 100  •  ZONE {idx+1:02d} / 10',accent,dark,1000+floor,boss=floor%10==0,index=idx)
+    img=scene(name,f'FLOOR {floor:03d}  •  ENDLESS ZONE {(floor-1)//10+1:02d}',accent,dark,1000+floor,boss=floor%10==0,index=idx)
     return _file(img,'dungeon-floor.png')
 
 def arena_file(challenge,turn):
