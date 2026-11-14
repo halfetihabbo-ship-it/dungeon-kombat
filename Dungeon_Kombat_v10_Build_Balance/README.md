@@ -1,28 +1,21 @@
-# Dungeon Kombat v10 — Build balance experiment
+# Dungeon Kombat v12 — Medieval Castle Menu
 
-This is a playable Discord bot code update, retaining the visual panels, stamina regeneration and randomized Championship Arena from v9. Live Discord/Railway testing has **not** been performed.
+**Only player-facing slash command: `/play`.** Every game function is accessible through private Discord buttons, dropdowns, and modal forms. All game data uses the same SQLite database and additive migrations as v11.
 
-## Combat changes
-- Berserker: +15% attack and +10% maximum HP.
-- Guardian: +5% defence and +2% attack (after first test showed that an 8% attack penalty made the build uncompetitive).
-- Arcanist: +5% attack, +5% maximum HP, +20 maximum energy.
-- Defence damage reduction now has stronger diminishing returns, with a 55% reduction cap.
-- Boss attacks gain 10% additional damage per turn after turn 8. This is uncapped; long boss fights become extremely dangerous.
-- Three healing potions per battle (previously two); no additional potion refills within a battle.
+## Menus
+- `/play` → Enter Dungeon, My Fighter, Blacksmith, Gather Resources, Treasury, Championship Arena, Rankings, Arena Score, Rules & Dates, Create Fighter.
+- My Fighter → View Fighter, Allocate Stats (select attribute, type 1–30), Appearance & Weapon, Choose Skill, Reset Stats (confirmation).
+- Blacksmith → Basic Upgrades, Advanced Forging, Enchant Equipment, Treasury.
+- Gather Resources → Gather Resources (choose activity), Check Stamina.
+- Dungeon battle → Attack, Defend, Special, Heal, Focus. After battle → Next Floor / Retry Floor and Exit Dungeon.
+- Arena → five challenges, each with tactical buttons.
 
-## Simulation
-Run `python simulate_live.py --runs 180`. It reads actual production functions from `main.py` and independently approximates tactical combat and equipment purchases.
+The castle, dungeon and arena artwork is rendered locally with medieval stonework, torchlight, heraldic banners, parchment, and serif lettering. No remote images are required.
 
-Results: 1,620 runs (3 builds x 3 activity schedules x 180 seeds). Dedicated and regular automated tactical players reach floor 100 in 100% of tested runs for all builds. Casual completion: balanced 93.9%, aggressive 50.0%, defensive 49.4%.
+## Railway
+Upload the *contents* of this package directly to your GitHub repository root (not an enclosing ZIP folder). Set `DISCORD_TOKEN`, `GUILD_ID`, `EVENT_START_DATE` (`2026-11-14` to start on 14 November UTC), and `DATABASE_PATH=/data/dungeon_kombat.db`. Mount a persistent Railway volume at `/data`. Start command: `python main.py`.
 
-**Interpretation:** build fairness improved among dedicated players, but difficulty is now too easy for them, and balanced remains more forgiving for casuals. These are simulation estimates, not real-player guarantees.
+Do not reset or delete your existing database when upgrading. Existing fighter records and arena scores are retained.
 
-## Important limitations
-- Simulation does not use Discord buttons, networking, or actual human decisions.
-- It uses the existing Axe/Sword policy per build, not all five weapon classes, and one tactical combat AI.
-- Arena scoring and fairness are not simulated.
-- The 5% post-kill healing proposed earlier was *not* implemented; HP resets at the beginning of each battle, so post-kill healing would have no gameplay effect.
-- The 3-heal limit is implemented through a three-potion battle inventory.
-
-## Deployment
-Configure DISCORD_TOKEN, GUILD_ID, EVENT_START_DATE and persistent DATABASE_PATH. Back up SQLite before deploying. Install requirements.txt and launch `python main.py`.
+## Verification
+Python syntax compilation passed. Live Discord button interactions could not be tested in this environment because `discord.py` is not installed and package installation is unavailable. Test on Railway before public launch.

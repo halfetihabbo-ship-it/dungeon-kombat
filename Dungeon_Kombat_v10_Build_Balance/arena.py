@@ -127,7 +127,7 @@ def install(bot, conn, lock, get_player, event_day):
             e.add_field(name='Enemy telegraph',value=CUES[cue]+' '+STANCE_HINTS[stance],inline=False)
             e.add_field(name='Your move',value='Choose one action. Every choice is permanent; no retries.',inline=False)
         else:
-            e.add_field(name='Result',value='Challenge completed. Use `/arena` for the next encounter.',inline=False)
+            e.add_field(name='Result',value='Challenge completed. Use `/play` → Championship Arena for the next encounter.',inline=False)
         if message: e.add_field(name='Last action',value=message,inline=False)
         e.set_image(url="attachment://arena-scene.png")
         e.set_footer(text='Individual randomised encounters • equal maximum 500 points')
@@ -150,7 +150,7 @@ def install(bot, conn, lock, get_player, event_day):
                             return await interaction.response.send_message('Clear Level 100 to qualify.',ephemeral=True)
                         row=conn.execute('SELECT turn,score,choices,scenario_seed FROM arena_runs WHERE user_id=? AND challenge=?',(self.uid,self.challenge)).fetchone()
                         if row is None or row['turn'] >= 4:
-                            return await interaction.response.send_message('This challenge is already complete or has not been started. Use `/arena`.',ephemeral=True)
+                            return await interaction.response.send_message('This challenge is already complete or has not been started. Use `/play` → Championship Arena.',ephemeral=True)
                         turn=row['turn']
                         cue,stance=scenario(row['scenario_seed'],self.challenge)[turn]
                         scores,optimal=round_rules(cue,stance)
@@ -173,7 +173,7 @@ def install(bot, conn, lock, get_player, event_day):
             r=runs(interaction.user.id)
             score,completed=total(interaction.user.id)
             if completed==5:
-                return await interaction.response.send_message(f'🏆 All five challenges complete! **Your final Arena score: {score}/500**. Check `/leaderboard`.',ephemeral=True)
+                return await interaction.response.send_message(f'🏆 All five challenges complete! **Your final Arena score: {score}/500**. Check `/play` → Rankings.',ephemeral=True)
             if not arena_open():
                 return await interaction.response.send_message('The Championship Arena is open during event days 1–9 only.',ephemeral=True)
             # Strict sequential progression; existing partially completed runs resume.

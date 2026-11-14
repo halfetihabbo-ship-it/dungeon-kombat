@@ -24,7 +24,7 @@ ARENA_THEMES = [
 ]
 
 def font(size, bold=False):
-    candidates = ['/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf' if bold else '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf', '/usr/share/fonts/truetype/liberation2/LiberationSans-Bold.ttf']
+    candidates = ['/usr/share/fonts/truetype/dejavu/DejaVuSerif-Bold.ttf' if bold else '/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf', '/usr/share/fonts/truetype/liberation2/LiberationSerif-Bold.ttf' if bold else '/usr/share/fonts/truetype/liberation2/LiberationSerif-Regular.ttf', '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf']
     for p in candidates:
         try:return ImageFont.truetype(p,size)
         except OSError:pass
@@ -33,59 +33,67 @@ def font(size, bold=False):
 def blend(a,b,t):return tuple(round(x*(1-t)+y*t) for x,y in zip(a,b))
 
 def scene(title, subtitle, accent, dark, seed, boss=False, arena=False, index=0):
+    """Illustrated medieval castle hall: stone masonry, heraldry, torchlight and parchment."""
     w,h=1100,440
     rng=random.Random(seed)
-    im=Image.new('RGB',(w,h),dark); d=ImageDraw.Draw(im)
-    for y in range(h):
-        t=y/h
-        d.line((0,y,w,y),fill=blend(blend(dark,accent,.18),dark,t*.92))
-    # Gothic stone blocks and torchlit pillars.
-    for col in range(0,w+120,115):
-        offset=rng.randint(-18,18)
-        for y in range(-40,h+50,75):
-            x=col+offset+(58 if (y//75)%2 else 0)
-            c=blend(dark,accent,rng.uniform(.08,.18))
-            d.rounded_rectangle((x,y,x+112,y+72),radius=3,outline=c,width=2)
-    # Receding vaulted arches, with glowing inner chamber.
-    for i in range(5):
-        margin=95+i*67
-        ytop=33+i*37
-        x0,x1=margin,w-margin
-        d.arc((x0,ytop,x1,720-i*50),180,360,fill=blend(accent,(230,225,214),.12+i*.035),width=max(3,11-i))
-        d.line((x0,ytop+230,x0,h),fill=blend(accent,dark,.5),width=7)
-        d.line((x1,ytop+230,x1,h),fill=blend(accent,dark,.5),width=7)
-    # Floor perspective.
-    d.polygon([(0,h),(w,h),(w*.64,315),(w*.36,315)],fill=blend(dark,accent,.20))
-    for i in range(1,6):
-        yy=315+int((i/5)**1.7*125)
-        d.line((0,yy,w,yy),fill=blend(accent,dark,.58),width=2)
-    for i in range(9):
-        x=int(w*i/8)
-        d.line((w//2,315,x,h),fill=blend(accent,dark,.62),width=2)
-    # Massive boss silhouette or atmospheric doorway.
-    cx,cy=550,235
+    stone=(47,43,39); mortar=(26,24,23); parchment=(222,196,145); ink=(58,37,24)
+    im=Image.new('RGB',(w,h),stone); d=ImageDraw.Draw(im)
+    # Weathered castle masonry, deliberately muted instead of neon gradients.
+    for row,y in enumerate(range(0,h,51)):
+        for col,x in enumerate(range(-110,w+110,135)):
+            x+=67 if row%2 else 0
+            shade=rng.randint(-10,12)
+            block=tuple(max(0,min(255,c+shade)) for c in stone)
+            d.rectangle((x+2,y+2,x+132,y+48),fill=block,outline=mortar,width=3)
+            for _ in range(4):
+                xx=x+rng.randint(10,120);yy=y+rng.randint(8,40)
+                d.line((xx,yy,xx+rng.randint(4,18),yy+rng.randint(-3,3)),fill=(63,57,49),width=1)
+    # Castle battlements across the upper edge.
+    d.rectangle((0,0,w,30),fill=(27,26,25))
+    for x in range(0,w,100):
+        d.rectangle((x,0,x+57,45),fill=(68,62,53),outline=(22,20,19),width=3)
+    # Deep gothic arch and iron-bound dungeon doors.
+    d.ellipse((330,56,770,520),fill=(21,19,19),outline=(113,101,79),width=17)
+    d.rectangle((350,250,750,h),fill=(21,19,19))
+    d.polygon([(391,430),(391,215),(550,109),(709,215),(709,430)],fill=(44,32,25),outline=(135,109,75))
+    for x in (421,487,553,619,685):
+        d.line((x,210,x,420),fill=(114,92,68),width=5)
+    for y in (250,337):
+        d.line((394,y,706,y),fill=(106,82,57),width=8)
+    d.ellipse((660,308,675,323),fill=(193,153,76))
+    # Medieval heraldic standards with stitched golden borders.
+    for x in (105,900):
+        d.line((x,57,x,300),fill=(145,117,69),width=8)
+        d.polygon([(x-52,72),(x+52,72),(x+52,260),(x,226),(x-52,260)],fill=blend(accent,(85,32,30),.60),outline=(197,161,94))
+        d.line((x-41,85,x+41,85),fill=(208,175,103),width=3)
+        d.polygon([(x,120),(x+21,148),(x,194),(x-21,148)],fill=(215,174,96))
+        d.line((x-18,154,x+18,154),fill=(85,50,31),width=4)
+    # Torch sconces and flickering flames.
+    for x in (255,845):
+        d.line((x,190,x,272),fill=(133,115,91),width=9)
+        d.polygon([(x-15,204),(x+15,204),(x+7,225),(x-7,225)],fill=(72,60,46))
+        d.ellipse((x-27,134,x+27,216),fill=(150,89,36))
+        d.polygon([(x-17,196),(x-20,165),(x,125),(x+20,165),(x+17,196)],fill=(240,166,60))
+        d.polygon([(x-8,192),(x-9,171),(x,150),(x+10,172),(x+8,192)],fill=(255,226,138))
+    # Floor flagstones.
+    d.polygon([(0,h),(w,h),(730,350),(370,350)],fill=(65,57,47))
+    for y in (370,394,425):d.line((0,y,w,y),fill=(30,28,25),width=3)
+    for x in (110,260,410,550,690,840,990):d.line((550,350,x,h),fill=(30,28,25),width=2)
+    # Boss sigil / shield, hand-drawn heraldic style.
     if boss:
-        d.ellipse((cx-115,cy-117,cx+115,cy+120),fill=blend(dark,accent,.34),outline=accent,width=5)
-        d.polygon([(cx-100,cy+106),(cx-86,cy-38),(cx-35,cy-98),(cx+35,cy-98),(cx+86,cy-38),(cx+100,cy+106)],fill=blend(dark,accent,.5),outline=accent)
-        d.polygon([(cx-90,cy-54),(cx-144,cy-145),(cx-20,cy-103),(cx+20,cy-103),(cx+144,cy-145),(cx+90,cy-54)],fill=blend(dark,accent,.64))
-        d.ellipse((cx-53,cy-28,cx-28,cy-11),fill=(255,219,132))
-        d.ellipse((cx+28,cy-28,cx+53,cy-11),fill=(255,219,132))
-        d.line((cx,cy+18,cx,cy+78),fill=accent,width=9)
-    else:
-        d.rounded_rectangle((cx-79,115,cx+79,345),radius=66,fill=blend(dark,accent,.32),outline=accent,width=6)
-        d.arc((cx-65,132,cx+65,290),180,360,fill=blend(accent,(255,255,255),.4),width=5)
-        d.line((cx-60,235,cx-60,330),fill=accent,width=5)
-        d.line((cx+60,235,cx+60,330),fill=accent,width=5)
-    # Floating dust / embers.
-    for _ in range(95):
-        x=rng.randrange(w); y=rng.randrange(40,h-20); r=rng.choice([1,1,2,3])
-        d.ellipse((x-r,y-r,x+r,y+r),fill=blend(accent,(255,255,225),rng.uniform(.2,.65)))
-    # Text plate for legibility.
-    d.rounded_rectangle((30,24,610,123),radius=16,fill=blend(dark,(0,0,0),.42),outline=accent,width=2)
-    d.text((52,36),title,font=font(34,True),fill=(247,236,211),stroke_width=1,stroke_fill=(5,5,10))
-    d.text((54,88),subtitle,font=font(20),fill=blend(accent,(255,255,255),.62))
-    d.rounded_rectangle((870,28,1068,78),radius=12,fill=dark,outline=accent,width=2)
-    d.text((893,40),'CHAMPIONSHIP' if arena else ('BOSS FLOOR' if boss else 'DUNGEON'),font=font(15,True),fill=(250,239,220))
+        d.polygon([(550,190),(615,218),(608,296),(550,340),(492,296),(485,218)],fill=(98,32,31),outline=(224,183,105),width=6)
+        d.polygon([(550,207),(570,252),(550,308),(530,252)],fill=(225,184,98))
+        d.line((510,260,590,260),fill=(225,184,98),width=7)
+    # Ornate parchment placard: more traditional fantasy than UI neon text.
+    d.rounded_rectangle((28,22,748,129),radius=9,fill=(84,61,39),outline=(179,137,79),width=5)
+    d.rounded_rectangle((36,30,740,121),radius=6,fill=parchment,outline=(116,77,43),width=3)
+    d.line((50,104,718,104),fill=(150,105,60),width=2)
+    display=title.title() if len(title)>24 else title
+    d.text((57,42),display,font=font(34,True),fill=ink)
+    d.text((59,87),subtitle.replace('•',' | '),font=font(17,True),fill=(108,69,38))
+    d.rounded_rectangle((817,23,1071,82),radius=5,fill=(58,37,28),outline=(202,162,94),width=4)
+    label='ROYAL TRIAL' if arena else ('BOSS CHAMBER' if boss else 'DUNGEON KEEP')
+    d.text((833,40),label,font=font(19,True),fill=(242,211,153))
     return im
 
 def _file(img,name):
