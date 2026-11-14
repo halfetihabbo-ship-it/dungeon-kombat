@@ -1,3 +1,5 @@
+# Dungeon Kombat v22 — Adventurer Handbook
+
 # Dungeon Kombat v21 — Royal Bounties & Loot
 
 ## Installation
@@ -19,3 +21,10 @@ Requires Python 3.11+, discord.py 2.4+, Pillow. Only player slash command: `/pla
 - The 22% loot chance is per *first successful clear*, not every attempt; duplicate drops can occur.
 - Bounty fights are three-turn **tactical counter puzzles**, not full HP-based boss fights. This is deliberate to avoid making the event dependent on random combat odds.
 - The bot has passed Python 3.11 syntax/AST checks and standalone loot/recipe checks. A live Discord integration test is still required. The v19 combat balance simulation was **not rerun** with the extra resources and loot; these features may alter completion rates.
+
+## v22 additions
+- Public `Enter the Kingdom` button now opens a five-page **private** handbook before the Kingdom menu. Players can read pages using Previous / Next and enter from any page.
+- Guide covers event rules, combat, attempts, fighter builds, stat points, equipment, loot, crafting, Royal Bounties, gathering, missions, Kingdom Events, Championship Arena and rankings.
+- `Rules & Guide` in the private main menu reopens the full handbook.
+- Restored the castle/navigation and registration definitions missing from the v21 source; these are necessary for its existing callbacks to work.
+- No database migrations, event clock resets or balance changes. Keep the same Railway volume at `/data`.

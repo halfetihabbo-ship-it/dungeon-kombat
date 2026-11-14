@@ -1233,14 +1233,91 @@ async def purchase_merchant(interaction,floor,key):
 
 RAID_BOSSES=['Stone Colossus','Dread Wyvern','Crypt Behemoth','Iron Titan','Frost Wyrm','Ashen Giant','Ancient Dragon']
 
+
+# The castle entrance now opens a private, multi-page handbook before entry.
+def castle_embed(title="THE KINGDOM'S GATE", detail='Enter the dungeon, manage your fighter, explore the kingdom or read the guide.'):
+    e=discord.Embed(title=f'🏰 DUNGEON KOMBAT | {title}',description=detail,color=discord.Color.from_rgb(111,74,43))
+    e.set_image(url='attachment://dungeon-panel.png')
+    return e
+
+async def open_castle(interaction):
+    p=get_player(interaction.user.id)
+    view=PlayMenu(interaction.user.id) if p else RegistrationGate()
+    prompt=('🌳 **Build unlocked!** Visit My Fighter → Choose Skill to select your permanent specialization.' if p and p['floor']>=5 and p['skill']=='None' else 'Your permanent fighter build unlocks at Floor 5.' if p and p['floor']<5 else 'Choose your next destination.')
+    await ui_reply(interaction,embed=castle_embed(detail=prompt),file=panel_file('event'),view=view,ephemeral=True)
+
+class RegistrationGate(discord.ui.View):
+    def __init__(self): super().__init__(timeout=900)
+    @discord.ui.button(label='Create Your Fighter',emoji='⚔️',style=discord.ButtonStyle.primary)
+    async def create(self,interaction,button):
+        if get_player(interaction.user.id): return await open_castle(interaction)
+        await interaction.response.send_modal(CreateFighter())
+    @discord.ui.button(label='Read Game Guide',emoji='📜',style=discord.ButtonStyle.secondary)
+    async def guide(self,interaction,button): await show_guide(interaction,0)
+
+GUIDE_PAGES=(
+ ('Welcome & Tournament Rules',
+  '**Your objective:** Clear 100 solo dungeon floors in seven days, then compete in the Championship Arena for the top three places.\n\n'
+  '**Getting started**\n1. Create your fighter and choose your appearance and starting weapon class.\n2. Enter the dungeon and clear floors in order.\n3. Spend stat points, improve equipment and gather resources.\n4. At Floor 5, choose a permanent fighter build.\n5. Reach Floor 100 to qualify for the Arena.\n\n'
+  '**Tournament:** 7 dungeon days starting '+START_DATE+' (UTC). The Arena has an additional two-day window. Your progress is saved automatically.'),
+ ('Dungeon Battles & Attempts',
+  '**Attempts:** 20 new dungeon attempts each day, unused attempts carry forward, up to 140 across the event. Starting a floor spends an attempt; losing does not erase cleared floors.\n\n'
+  '**Combat buttons**\n⚔️ **Attack** — deal damage and recover some energy.\n🛡️ **Defend** — reduce incoming damage; especially useful against heavy or venom attacks.\n🔥 **Special** — powerful weapon-based attack; uses 28 energy and has a cooldown.\n💚 **Heal** — consume one of your battle potions to recover HP.\n⚡ **Focus** — regain energy and strengthen the next attack.\n\n'
+  'Read the **Enemy Intention** before each turn. Bosses appear every 10 floors and have multiple phases. The fight can be resumed from the dungeon menu.'),
+ ('Fighter Builds, Stats & Equipment',
+  '**At Floor 5, choose ONE permanent build:**\n⚔️ **Berserker:** +15% attack, +21% HP.\n🛡️ **Guardian:** +5% defence, +2% attack.\n🔮 **Arcanist:** +20 energy, +5% attack and HP.\n\n'
+  '**Stats:** Each cleared floor grants 3 stat points. Allocate them in My Fighter. Bosses grant respec tokens.\n\n'
+  '**Weapon classes:** Sword, Axe, Daggers, Staff or Spear; each has its own special attack.\n'
+  '**Collectibles:** 35 named weapons and armour pieces. Equip one collectible weapon and one armour piece in My Fighter → Equipment Collection. Bonuses are small and do not replace your starting weapon class.\n'
+  '**Blacksmith:** Buy basic upgrades, advanced forging (Floor 50 after +10), enchantments (Floor 30) or craft collectible equipment.'),
+ ('Loot, Bounties & Kingdom',
+  '**How to collect equipment**\n🎁 **Milestones:** Guaranteed pieces on selected floors.\n💎 **Dungeon loot:** 22% chance per first successful floor clear, with Common through Legendary rarity; duplicates are possible.\n🔨 **Crafting:** Eight recipes unlocked at certain floors; spend gold and materials.\n🎯 **Royal Bounty:** Unlock at Floor 5. Up to 3 challenges daily; counter at least 2 of 3 telegraphed moves to win 300 gold, 5 materials and an unowned collectible (if available).\n\n'
+  '**Gathering:** Spend activity stamina in the Gold Mine, Crystal Cavern or Ancient Ruins. You gain 15 stamina daily and +1 every two hours, up to 45.\n'
+  '**Daily Missions:** Defeat 5 dungeon enemies, complete 3 gathering activities and defeat the Royal Bounty. Claim each reward and the all-three completion bonus.\n'
+  '**Kingdom Events:** Daily resource bonuses rotate at 00:00 UTC. Explore merchants, treasure chambers and the Three Doors for extra rewards.'),
+ ('Championship Arena, Rankings & Tips',
+  '**Qualify:** Clear Floor 100 during the seven-day dungeon event.\n'
+  '**Arena:** Five tactical challenges, up to 500 points total. The Arena remains open for two additional days after the dungeon period.\n'
+  '**Final ranking:** Completed Arena scores rank first; dungeon floor and efficiency act as tiebreakers. The competition awards 1st, 2nd and 3rd place.\n\n'
+  '**Tips for success**\n• Use your daily attempts and gathering stamina consistently.\n• Choose your fighter build as soon as it unlocks.\n• Upgrade and equip better gear before difficult bosses.\n• Read enemy intentions; defending can be stronger than attacking.\n• Claim Daily Missions and Royal Bounties for resources and gear.\n\n'
+  '**Navigation:** Use the Castle Gate button to return to your private menu. The shared public entrance never lets other players control your fighter.'),
+)
+
+def guide_embed(page):
+    title,description=GUIDE_PAGES[page]
+    e=discord.Embed(title=f'📖 Adventurer Handbook | {title}',description=description,color=discord.Color.from_rgb(111,74,43))
+    e.set_footer(text=f'Guide page {page+1}/{len(GUIDE_PAGES)} • Dungeon Kombat')
+    return e
+
+async def show_guide(interaction,page=0):
+    page=max(0,min(len(GUIDE_PAGES)-1,page))
+    await ui_reply(interaction,embed=guide_embed(page),view=GuideView(interaction.user.id,page),ephemeral=True)
+
+class GuideView(discord.ui.View):
+    def __init__(self,uid,page):
+        super().__init__(timeout=900)
+        self.uid=uid;self.page=page
+        self.previous.disabled=page==0
+        self.next.disabled=page==len(GUIDE_PAGES)-1
+    async def interaction_check(self,interaction):
+        if interaction.user.id!=self.uid:
+            await interaction.response.send_message('Open your own guide from the public entrance.',ephemeral=True)
+            return False
+        return True
+    @discord.ui.button(label='Previous',emoji='⬅️',style=discord.ButtonStyle.secondary,row=0)
+    async def previous(self,i,b):await show_guide(i,self.page-1)
+    @discord.ui.button(label='Next',emoji='➡️',style=discord.ButtonStyle.secondary,row=0)
+    async def next(self,i,b):await show_guide(i,self.page+1)
+    @discord.ui.button(label='Enter the Kingdom',emoji='🏰',style=discord.ButtonStyle.primary,row=1)
+    async def enter(self,i,b):await open_castle(i)
+
 class KingdomEntrance(discord.ui.View):
     """Persistent shared entry button. Each click opens a private independent UI."""
     def __init__(self):
         super().__init__(timeout=None)
     @discord.ui.button(label='Enter the Kingdom', emoji='🏰', style=discord.ButtonStyle.primary, custom_id='dk:v14:enter_kingdom')
     async def enter(self, interaction, button):
-        view=PlayMenu(interaction.user.id) if get_player(interaction.user.id) else RegistrationGate()
-        await interaction.response.send_message(embed=castle_embed('YOUR ADVENTURE', 'Create your fighter or choose your next destination. The Championship Arena appears after Floor 100.'),file=panel_file('event'),view=view,ephemeral=True)
+        await interaction.response.send_message(embed=guide_embed(0),view=GuideView(interaction.user.id,0),ephemeral=True)
 
 class OwnedView(discord.ui.View):
     def __init__(self,uid,timeout=900):
@@ -1634,7 +1711,7 @@ class PlayMenu(OwnedView):
     @discord.ui.button(label='Kingdom',emoji='🏰',style=discord.ButtonStyle.secondary,row=1)
     async def kingdom(self,i,b):await ui_reply(i,embed=discord.Embed(title='🏰 Explore the Kingdom',description='Blacksmith, Activities, Daily Missions, Kingdom Events, Royal Bounties, Merchant, Treasury and Rankings.',color=discord.Color.from_rgb(124,89,50)),view=KingdomMenu(self.uid),ephemeral=True)
     @discord.ui.button(label='Rules & Guide',emoji='📜',style=discord.ButtonStyle.secondary,row=1)
-    async def rules(self,i,b):await event.callback(i)
+    async def rules(self,i,b):await show_guide(i,0)
 
 class ArenaEntryButton(discord.ui.Button):
     def __init__(self):
