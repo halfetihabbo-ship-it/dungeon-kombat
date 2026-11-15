@@ -19,7 +19,13 @@ from visuals import floor_file, panel_file
 
 TOKEN = os.getenv('DISCORD_TOKEN', '')
 GUILD_ID = os.getenv('GUILD_ID', '')
+TEST_MODE = os.getenv('DUNGEON_TEST_MODE', '0').strip() == '1'
 DB_PATH = os.getenv('DATABASE_PATH', '/data/dungeon_kombat.db' if Path('/data').exists() else 'dungeon_kombat.db')
+if TEST_MODE:
+    # Explicitly isolate test data even if production DATABASE_PATH is configured.
+    DB_PATH = os.getenv('TEST_DATABASE_PATH', '/data/dungeon_kombat_test.db' if Path('/data').exists() else 'dungeon_kombat_test.db')
+    if Path(DB_PATH).resolve() == Path(os.getenv('DATABASE_PATH', '/data/dungeon_kombat.db' if Path('/data').exists() else 'dungeon_kombat.db')).resolve():
+        raise RuntimeError('TEST_DATABASE_PATH must differ from production DATABASE_PATH')
 START_DATE = os.getenv('EVENT_START_DATE', '2026-11-14')  # UTC, inclusive
 DAYS = 7
 STAMINA_CAP = 45
@@ -303,6 +309,7 @@ intents = discord.Intents.default()
 bot = commands.Bot(command_prefix='!', intents=intents)
 
 def event_day():
+    if TEST_MODE: return 1
     start = datetime.strptime(START_DATE, '%Y-%m-%d').replace(tzinfo=timezone.utc)
     return (datetime.now(timezone.utc) - start).days + 1
 
@@ -1209,6 +1216,114 @@ async def reset(interaction: discord.Interaction):
         'Confirm within 90 seconds or cancel.',
         view=ConfirmCompetitionReset(interaction.user.id), ephemeral=True)
 
+# Test laboratory is available ONLY on an explicitly enabled, isolated test bot.
+TEST_FIELDS = {
+    'floor': (0, 500), 'gold': (0, 10000000), 'materials': (0, 100000),
+    'weapon_tier': (1, 10), 'armor_tier': (1, 10),
+    'weapon_upgrade': (0, 10), 'armor_upgrade': (0, 10),
+    'weapon_advanced': (0, 5), 'armor_advanced': (0, 5),
+    'weapon_cores': (0, 100), 'armor_cores': (0, 100),
+    'stamina': (0, STAMINA_CAP), 'points': (0, 500),
+}
+
+class TestEditModal(discord.ui.Modal, title='Dungeon Test — Edit Fighter'):
+    field = discord.ui.TextInput(label='Stat name', placeholder='floor / gold / weapon_tier / ...', max_length=30)
+    value = discord.ui.TextInput(label='New value', placeholder='50', max_length=10)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if not TEST_MODE or not interaction.guild or not interaction.user.guild_permissions.administrator:
+            return await interaction.response.send_message('Test administrator access required.', ephemeral=True)
+        field = str(self.field).strip().lower()
+        try: value = int(str(self.value).strip())
+        except ValueError: return await interaction.response.send_message('Enter a whole number.', ephemeral=True)
+        if field not in TEST_FIELDS:
+            return await interaction.response.send_message('Allowed: ' + ', '.join(TEST_FIELDS), ephemeral=True)
+        lo, hi = TEST_FIELDS[field]
+        if not lo <= value <= hi:
+            return await interaction.response.send_message(f'{field} must be between {lo} and {hi}.', ephemeral=True)
+        async with lock:
+            if not get_player(interaction.user.id):
+                return await interaction.response.send_message('Create a fighter using /play first.', ephemeral=True)
+            conn.execute(f'UPDATE players SET {field}=? WHERE user_id=?', (value, interaction.user.id))
+            # Always restart the next battle with the edited statistics.
+            conn.execute('DELETE FROM battles WHERE user_id=?', (interaction.user.id,))
+            conn.commit()
+        await interaction.response.send_message(f'🧪 Updated **{field}** to **{value}**. Active battle cleared. Use /play to test.', ephemeral=True)
+
+class TestLabView(discord.ui.View):
+    def __init__(self, uid):
+        super().__init__(timeout=300)
+        self.uid=uid
+
+    async def interaction_check(self, interaction):
+        if not TEST_MODE or interaction.user.id != self.uid or not interaction.user.guild_permissions.administrator:
+            await interaction.response.send_message('This private test panel belongs to its administrator.', ephemeral=True)
+            return False
+        return True
+
+    @discord.ui.button(label='Edit Stats / Floor', emoji='🛠️', style=discord.ButtonStyle.primary)
+    async def edit(self, interaction, button):
+        await interaction.response.send_modal(TestEditModal())
+
+    @discord.ui.button(label='Max Out Fighter', emoji='⚔️', style=discord.ButtonStyle.success)
+    async def max_fighter(self, interaction, button):
+        async with lock:
+            if not get_player(self.uid):
+                return await interaction.response.send_message('Create a fighter using /play first.', ephemeral=True)
+            conn.execute("""UPDATE players SET gold=1000000, materials=10000, points=250,
+                weapon_upgrade=10, armor_upgrade=10, weapon_advanced=5, armor_advanced=5,
+                weapon_tier=10, armor_tier=10, weapon_cores=30, armor_cores=30,
+                stamina=? WHERE user_id=?""", (STAMINA_CAP, self.uid))
+            conn.execute('DELETE FROM battles WHERE user_id=?', (self.uid,))
+            conn.commit()
+        await interaction.response.send_message('🧪 Maxed equipment and resources. Choose a floor with Edit Stats / Floor.', ephemeral=True)
+
+    @discord.ui.button(label='Unlock Companions & Skills', emoji='🐾', style=discord.ButtonStyle.secondary)
+    async def unlock(self, interaction, button):
+        async with lock:
+            if not get_player(self.uid):
+                return await interaction.response.send_message('Create a fighter using /play first.', ephemeral=True)
+            for companion in COMPANIONS:
+                conn.execute('INSERT INTO dungeon_companions(user_id,companion,level) VALUES(?,?,3) ON CONFLICT(user_id,companion) DO UPDATE SET level=3', (self.uid,companion))
+            for branch, (_, _, cap) in SKILL_BRANCHES.items():
+                conn.execute('INSERT INTO dungeon_skills(user_id,branch,level) VALUES(?,?,?) ON CONFLICT(user_id,branch) DO UPDATE SET level=excluded.level', (self.uid,branch,cap))
+            conn.execute('UPDATE players SET active_companion=?,floor=MAX(floor,180) WHERE user_id=?', (next(iter(COMPANIONS)),self.uid))
+            conn.execute('DELETE FROM battles WHERE user_id=?', (self.uid,))
+            conn.commit()
+        await interaction.response.send_message('🧪 All skills and companions unlocked at max level. Floor raised to at least 180; edit it to test a lower floor.', ephemeral=True)
+
+    @discord.ui.button(label='Clear Current Battle', emoji='🔄', style=discord.ButtonStyle.secondary)
+    async def clear_battle(self, interaction, button):
+        async with lock:
+            conn.execute('DELETE FROM battles WHERE user_id=?', (self.uid,))
+            conn.commit()
+        await interaction.response.send_message('🧪 Current battle cleared. Enter the dungeon again.', ephemeral=True)
+
+    @discord.ui.button(label='Reset My Test Fighter', emoji='🗑️', style=discord.ButtonStyle.danger)
+    async def reset_me(self, interaction, button):
+        async with lock:
+            # Remove only the invoking tester, never any other account.
+            for table in RESET_TABLES:
+                if table in ('world_raids',): continue
+                cols={row[1] for row in conn.execute(f'PRAGMA table_info({table})')}
+                if 'user_id' in cols: conn.execute(f'DELETE FROM {table} WHERE user_id=?', (self.uid,))
+            conn.commit()
+        await interaction.response.send_message('🧪 Your test fighter has been removed. Recreate it using /play.', ephemeral=True)
+
+if TEST_MODE:
+    @bot.tree.command(name='test', description='ADMIN ONLY: open isolated Dungeon Kombat test controls')
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.guild_only()
+    async def test(interaction: discord.Interaction):
+        if not interaction.guild or not interaction.user.guild_permissions.administrator:
+            return await interaction.response.send_message('Administrator only.', ephemeral=True)
+        await interaction.response.send_message(
+            '🧪 **Dungeon Kombat v28 — Test Laboratory**\n'
+            'This is an isolated test database; live competition data is untouched.\n'
+            'Create your fighter with /play, then edit floors, resources and upgrades here.\n'
+            'Allowed fields: ' + ', '.join(TEST_FIELDS),
+            view=TestLabView(interaction.user.id), ephemeral=True)
+
 @bot.tree.command(name='event',description='View the tournament dates and rules')
 async def event(interaction: discord.Interaction):
     e=discord.Embed(title='🏰 Dungeon Kombat: The Endless Dungeon',description=f'**Start (UTC):** {START_DATE}\n**Duration:** 7 days\n**Status:** {event_state().title()}\n**Current day:** {event_day()}\n**Goal:** Reach the highest completed floor. Top three win.',color=discord.Color.orange())
@@ -2010,7 +2125,7 @@ async def play(interaction:discord.Interaction):
 # Public /play and /leaderboard, plus admin-only /reset. Other handlers remain
 # callable by the UI, with no Championship Arena.
 for _cmd in list(bot.tree.get_commands()):
-    if _cmd.name not in ('play', 'leaderboard', 'reset'): bot.tree.remove_command(_cmd.name)
+    if _cmd.name not in (('play', 'leaderboard', 'reset', 'test') if TEST_MODE else ('play', 'leaderboard', 'reset')): bot.tree.remove_command(_cmd.name)
 
 @bot.event
 async def on_ready():
