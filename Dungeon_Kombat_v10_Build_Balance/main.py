@@ -342,6 +342,10 @@ def enemy_stats(floor):
         attack *= 1.18*(1.04+.002*min(floor//10,10))
         defense *= 1.15
         # Predictable boss counterplay is more important than lucky retries.
+        if floor == 40:
+            # Plague Keeper was overtuned by poison, shielding and enrage stacking.
+            hp *= 0.82
+            attack *= 0.92
         if floor>=110:
             hp *= 1.07
     return round(hp),round(attack),round(defense),boss
@@ -628,7 +632,7 @@ def battle_embed(p, b, message=None):
     e = discord.Embed(title=f'⚔️ Floor {b["floor"]} — {"BOSS" if boss else "Monster"}', description=f'**{TIERS[min((b["floor"]-1)//10,9)]}**\n{message or b["log"]}', color=discord.Color.red() if boss else discord.Color.dark_blue())
     e.add_field(name=f'🧍 {p["name"]}', value=f'❤️ {b["hp"]}/{maxhp}\n🔮 {b["energy"]}/{maxenergy}\n💚 {b["potions"]} potions')
     e.add_field(name='💀 Enemy', value=f'❤️ {b["enemy_hp"]}/{enemyhp}\n⚔️ {enemyatk} ATK\n🛡️ {enemydef} DEF' + ('\n🛡️ Shielded: normal attacks effective' if boss and b['floor']>=20 and b['turn']%5 in (1,2) else ''))
-    e.add_field(name='Turn', value=f'{b["turn"]}/{30 if boss else 20} • Special cooldown: {b["special_cd"]}' + (f' • 🔥 Boss enrage +{(b["turn"]-8)*10}% incoming damage' if boss and b['turn']>8 else ''), inline=False)
+    e.add_field(name='Turn', value=f'{b["turn"]}/{30 if boss else 20} • Special cooldown: {b["special_cd"]}' + (f' • 🔥 Boss enrage +{min(35,(b["turn"]-8)*10)}% incoming damage' if boss and b['turn']>8 else ''), inline=False)
     intent=enemy_intent(b)
     e.add_field(name='📜 Enemy Intention',value=INTENT_TEXT[intent],inline=False)
     if boss:
@@ -713,7 +717,7 @@ async def resolve_action(interaction, action):
             elif intent=='guard': incoming=round(incoming*.72)
             if boss and phase==2: incoming=round(incoming*1.07)
             elif boss and phase==3: incoming=round(incoming*1.14)
-            if boss and b['turn']>8: incoming=round(incoming*(1+.10*(b['turn']-8)))
+            if boss and b['turn']>8: incoming=round(incoming*(1+min(.35,.10*(b['turn']-8))))
             if guard: incoming = max(1,round(incoming*0.55))
             # Dodge soft cap: no more than 20%.
             dodge = min(0.2, max(0, (speed-10)*0.001))
