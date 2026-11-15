@@ -344,8 +344,8 @@ def enemy_stats(floor):
         # Predictable boss counterplay is more important than lucky retries.
         if floor == 40:
             # Plague Keeper was overtuned by poison, shielding and enrage stacking.
-            hp *= 0.82
-            attack *= 0.92
+            hp *= 0.82 * 0.62
+            attack *= 0.92 * 0.75
         if floor>=110:
             hp *= 1.07
     return round(hp),round(attack),round(defense),boss
@@ -387,7 +387,7 @@ def enemy_intent(b):
     phase=boss_phase(b)
     rng=random.Random(b['seed']+b['turn']*397+phase*13)
     options=['heavy','guard','reckless','normal']
-    if b['floor']>=11: options.append('venom')
+    if b['floor']>=11 and b['floor']!=40: options.append('venom')
     if phase>=2: options+=['heavy','guard']
     if phase==3: options+=['reckless','heavy']
     return rng.choice(options)
@@ -631,13 +631,13 @@ def battle_embed(p, b, message=None):
     enemyhp, enemyatk, enemydef, boss = enemy_stats(b['floor'])
     e = discord.Embed(title=f'⚔️ Floor {b["floor"]} — {"BOSS" if boss else "Monster"}', description=f'**{TIERS[min((b["floor"]-1)//10,9)]}**\n{message or b["log"]}', color=discord.Color.red() if boss else discord.Color.dark_blue())
     e.add_field(name=f'🧍 {p["name"]}', value=f'❤️ {b["hp"]}/{maxhp}\n🔮 {b["energy"]}/{maxenergy}\n💚 {b["potions"]} potions')
-    e.add_field(name='💀 Enemy', value=f'❤️ {b["enemy_hp"]}/{enemyhp}\n⚔️ {enemyatk} ATK\n🛡️ {enemydef} DEF' + ('\n🛡️ Shielded: normal attacks effective' if boss and b['floor']>=20 and b['turn']%5 in (1,2) else ''))
-    e.add_field(name='Turn', value=f'{b["turn"]}/{30 if boss else 20} • Special cooldown: {b["special_cd"]}' + (f' • 🔥 Boss enrage +{min(35,(b["turn"]-8)*10)}% incoming damage' if boss and b['turn']>8 else ''), inline=False)
+    e.add_field(name='💀 Enemy', value=f'❤️ {b["enemy_hp"]}/{enemyhp}\n⚔️ {enemyatk} ATK\n🛡️ {enemydef} DEF' + ('\n🛡️ Shielded: normal attacks effective' if boss and b['floor']>=20 and b['floor']!=40 and b['turn']%5 in (1,2) else ''))
+    e.add_field(name='Turn', value=f'{b["turn"]}/{30 if boss else 20} • Special cooldown: {b["special_cd"]}' + (f' • 🔥 Boss enrage +{min(35,(b["turn"]-8)*10)}% incoming damage' if boss and b['floor']!=40 and b['turn']>8 else ''), inline=False)
     intent=enemy_intent(b)
     e.add_field(name='📜 Enemy Intention',value=INTENT_TEXT[intent],inline=False)
     if boss:
         phase=boss_phase(b)
-        e.add_field(name='👑 Boss',value=f'{BOSS_NAMES[((b["floor"]//10)-1)%len(BOSS_NAMES)]} • Phase {phase}/3' + (' • Final Stand: higher damage, exposed openings' if phase==3 else ''),inline=False)
+        e.add_field(name='👑 Boss',value=f'{BOSS_NAMES[((b["floor"]//10)-1)%len(BOSS_NAMES)]} • Phase {phase}/3' + (' • Final Stand: exposed openings' if phase==3 and b['floor']==40 else ' • Final Stand: higher damage, exposed openings' if phase==3 else ''),inline=False)
     if b['poisoned']:
         e.add_field(name='☠️ Poison', value=f'{b["poisoned"]} turns remaining', inline=False)
     e.set_image(url="attachment://dungeon-floor.png")
@@ -671,7 +671,7 @@ async def resolve_action(interaction, action):
                 elif p['weapon'] == 'Daggers': multiplier = 1.53
                 elif p['weapon'] == 'Staff': multiplier = 1.56
                 elif p['weapon'] == 'Spear': multiplier = 1.53
-            shielded=boss and b['floor']>=20 and b['turn']%5 in (1,2)
+            shielded=boss and b['floor']>=20 and b['floor']!=40 and b['turn']%5 in (1,2)
             if shielded: multiplier *= (.48 if action=='special' else 1.55)
             if action=='attack': energy=min(maxenergy,energy+7)
             if focused: multiplier *= 1.15
@@ -711,13 +711,13 @@ async def resolve_action(interaction, action):
         if enemyhp > 0:
             rng = random.Random(b['seed'] + b['turn']*157)
             incoming = round(enemyatk*damage_reduction(defense)*rng.uniform(0.9,1.1))
-            if charge: incoming = round(incoming*2.1)
+            if charge and b['floor']!=40: incoming = round(incoming*2.1)
             elif intent=='heavy': incoming=round(incoming*1.45)
             elif intent=='reckless': incoming=round(incoming*.82)
             elif intent=='guard': incoming=round(incoming*.72)
-            if boss and phase==2: incoming=round(incoming*1.07)
-            elif boss and phase==3: incoming=round(incoming*1.14)
-            if boss and b['turn']>8: incoming=round(incoming*(1+min(.35,.10*(b['turn']-8))))
+            if boss and b['floor']!=40 and phase==2: incoming=round(incoming*1.07)
+            elif boss and b['floor']!=40 and phase==3: incoming=round(incoming*1.14)
+            if boss and b['floor']!=40 and b['turn']>8: incoming=round(incoming*(1+min(.35,.10*(b['turn']-8))))
             if guard: incoming = max(1,round(incoming*0.55))
             # Dodge soft cap: no more than 20%.
             dodge = min(0.2, max(0, (speed-10)*0.001))
@@ -731,10 +731,10 @@ async def resolve_action(interaction, action):
                 hp = max(0,hp-tick)
                 poison -= 1
                 notes.append(f'☠️ Poison deals **{tick}** damage.')
-            if b['floor'] >= 11 and intent=='venom' and not guard and not poison:
+            if b['floor'] >= 11 and b['floor']!=40 and intent=='venom' and not guard and not poison:
                 poison = 2
                 notes.append('☠️ The enemy poisons you for two turns!')
-            charge = 1 if b['floor'] >= 31 and b['turn'] % 4 == 0 else 0
+            charge = 1 if b['floor'] >= 31 and b['floor']!=40 and b['turn'] % 4 == 0 else 0
         nextturn = b['turn']+1
         won = enemyhp == 0
         lost = hp <= 0 or nextturn > (30 if boss else 20)
