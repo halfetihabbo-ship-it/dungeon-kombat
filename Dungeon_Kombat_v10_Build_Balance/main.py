@@ -142,6 +142,12 @@ CREATE TABLE IF NOT EXISTS dungeon_companions (user_id INTEGER NOT NULL, compani
 if 'active_companion' not in {r[1] for r in conn.execute('PRAGMA table_info(players)')}:
     conn.execute("ALTER TABLE players ADD COLUMN active_companion TEXT NOT NULL DEFAULT 'None'")
 conn.commit()
+# v39: persistent, one-at-a-time expeditions. Safe additive migration.
+conn.execute("""CREATE TABLE IF NOT EXISTS expeditions (
+ user_id INTEGER PRIMARY KEY, started_at INTEGER NOT NULL, finishes_at INTEGER NOT NULL,
+ duration_minutes INTEGER NOT NULL, claimed INTEGER NOT NULL DEFAULT 0)""")
+conn.execute("""CREATE TABLE IF NOT EXISTS expedition_daily (user_id INTEGER NOT NULL, day INTEGER NOT NULL, completed INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(user_id,day))""")
+conn.commit()
 
 # v27: deterministic progression; old collection data remains stored but provides no combat bonuses.
 SKILL_BRANCHES={'Offence':('Attack',.018,4),'Vitality':('HP',.022,4),'Protection':('Defence',.028,4)}
@@ -271,9 +277,9 @@ def roll_loot(uid, floor):
     return found
 
 MISSION_TYPES = {
- 'dungeon': ('Defeat 5 dungeon enemies', 5, 250, 3),
- 'gather': ('Complete 3 activities', 3, 180, 5),
- 'bounty': ('Defeat today’s Royal Bounty', 1, 200, 4),
+ 'dungeon': ('Defeat 5 dungeon enemies', 5, 160, 2),
+ 'gather': ('Complete 3 activities', 3, 500, 9),
+ 'bounty': ('Defeat today’s Royal Bounty', 1, 400, 7),
 }
 KINGDOM_EVENTS = (
  ('The King’s Generosity', 'Dungeon first-clear gold +10%', 'gold'),
@@ -375,8 +381,8 @@ TIER_NAMES=('Iron','Steel','Obsidian','Mithril','Dragonforged','Voidsteel','Cele
 WEAPON_TIER_BONUS=(0,.07,.14,.21,.28,.35,.42,.49,.56,.63)
 ARMOUR_HP_BONUS=(0,.07,.14,.21,.28,.35,.42,.49,.56,.63)
 ARMOUR_DEF_BONUS=(0,.045,.09,.135,.18,.225,.27,.315,.36,.405)
-TIER_GOLD=(0,1000,2200,3700,5600,7900,10500,13500,16500,19500)
-TIER_MATERIALS=(0,9,17,26,36,48,62,78,96,115)
+TIER_GOLD=(0,3500,8500,6200,8400,10800,11700,9800,16500,19500)
+TIER_MATERIALS=(0,28,65,47,64,83,92,82,96,115)
 
 def tier_label(p,kind):
     tier=p['weapon_tier'] if kind=='weapon' else p['armor_tier']
@@ -384,7 +390,7 @@ def tier_label(p,kind):
 
 def stats(p):
     def effective(n):
-        return min(n,40)+max(0,min(n-40,40))*.6+max(0,n-80)*.3
+        return min(n,40)+max(0,min(n-40,40))*.48+max(0,n-80)*.10
     hp=int(115+min(150,p['floor'])*1.65+effective(p['vitality'])*5+p['armor_upgrade']*6)
     atk=int(20+effective(p['strength'])*2+(10+p['weapon_stage']*22+p['weapon_upgrade']*4)*WEAPONS[p['weapon']][0])
     defense=int(10+effective(p['defence'])+p['armor_upgrade']*4)
@@ -478,14 +484,30 @@ def enemy_stats(floor):
     return round(hp),round(attack),round(defense),boss
 
 def reward_for_floor(floor):
-    """Deterministic first-clear rewards; boss chests include extra gold/materials."""
+    """v39: dungeon is for progression; activities fund forging."""
     band = min(10,(floor - 1) // 10)
-    gold = 90 + 12*min(floor,110) + 15*band
-    mats = 2 + min(floor,150) // 30 + max(0,min(4,(floor-60)//30))
+    base_gold = 90 + 12*min(floor,110) + 15*band
+    base_mats = 2 + min(floor,150) // 30 + max(0,min(4,(floor-60)//30))
+    gold = max(15,round(base_gold * .30))
+    mats = max(0,round(base_mats * .25))
     if floor % 10 == 0:
-        gold += 350 + 60*band
-        mats += 8 + band
+        gold += round((350 + 60*band)*.50)
+        mats += max(1,round((8 + band)*.50))
     return gold, mats
+
+# Strong but non-absolute equipment preparation penalty: undergeared bosses gain HP.
+# Applies only to boss HP. Players can still win with clever builds and tactics.
+def boss_preparation_multiplier(p, floor):
+    """Soft, early preparation curve. No floor locks or daily attempt caps.
+
+    Under-equipped boss HP increases; equipment never becomes a strict entry rule.
+    """
+    if floor < 30 or floor % 10: return 1.0
+    expected = (2 if floor < 50 else 3 if floor < 70 else 4 if floor < 90
+                else 5 if floor < 110 else 6 if floor < 130
+                else 7 if floor < 150 else 8)
+    shortfall = max(0, expected - min(p['weapon_tier'], p['armor_tier']))
+    return 1.0 + min(3.0, shortfall * .52)
 
 # Adventure encounters are first-clear only. No extra dungeon attempts are spent.
 def encounter_kind(floor):
@@ -502,6 +524,8 @@ BOSS_NAMES=('The Fallen Knight','The Crypt Warden','The Iron Golem','The Plague 
 
 def boss_phase(b):
     max_hp,_,_,boss=enemy_stats(b['floor'])
+    p=get_player(b['user_id'])
+    if p:max_hp=round(max_hp*boss_preparation_multiplier(p,b['floor']))
     if not boss: return 0
     ratio=b['enemy_hp']/max(1,max_hp)
     return 1 if ratio>0.60 else 2 if ratio>0.25 else 3
@@ -756,6 +780,7 @@ class DungeonResultView(discord.ui.View):
 def battle_embed(p, b, message=None):
     maxhp, atk, defense, speed, maxenergy = stats(p)
     enemyhp, enemyatk, enemydef, boss = enemy_stats(b['floor'])
+    enemyhp=round(enemyhp*boss_preparation_multiplier(p,b['floor']))
     e = discord.Embed(title=f'⚔️ Floor {b["floor"]} — {"BOSS" if boss else "Monster"}', description=f'**{TIERS[min((b["floor"]-1)//10,9)]}**\n{message or b["log"]}', color=discord.Color.red() if boss else discord.Color.dark_blue())
     e.add_field(name=f'🧍 {p["name"]}', value=f'❤️ {b["hp"]}/{maxhp}\n🔮 {b["energy"]}/{maxenergy}\n💚 {b["potions"]} potions')
     e.add_field(name='💀 Enemy', value=f'❤️ {b["enemy_hp"]}/{enemyhp}\n⚔️ {enemyatk} ATK\n🛡️ {enemydef} DEF' + ('\n🛡️ Shielded: special attacks effective' if boss and b['floor']>=20 and b['floor']!=40 and b['turn']%5 in (1,2) else ''))
@@ -1070,6 +1095,7 @@ async def dungeon(interaction: discord.Interaction):
                 return await ui_reply(interaction, '🏆 You have cleared Floor 150, the final dungeon boss! The Championship Arena opens on days 8–9. Your equipment and progress are saved.', ephemeral=True)
             floor = p['floor']+1
             enemyhp,_,_,_ = enemy_stats(floor)
+            enemyhp=round(enemyhp*boss_preparation_multiplier(p,floor))
             hp,_,_,_,energy = stats(p)
             seed = random.SystemRandom().randint(1,2**31-1)
             conn.execute('INSERT INTO battles(user_id,floor,hp,energy,potions,enemy_hp,seed) VALUES(?,?,?,?,?,?,?)',(interaction.user.id,floor,hp,energy,3,enemyhp,seed))
@@ -1080,7 +1106,7 @@ async def dungeon(interaction: discord.Interaction):
     await ui_reply(interaction, embed=embed,file=floor_file(b['floor']),view=BattleView(interaction.user.id),ephemeral=True)
 
 @bot.tree.command(name='activities',description='Earn resources through daily stamina-limited activities')
-@app_commands.choices(activity=[app_commands.Choice(name='Gold Mine (220 gold)',value='mine'),app_commands.Choice(name='Crystal Cavern (4 materials)',value='crystal'),app_commands.Choice(name='Ancient Ruins (105 gold, 2 materials)',value='ruins')])
+@app_commands.choices(activity=[app_commands.Choice(name='Gold Mine (380 gold)',value='mine'),app_commands.Choice(name='Crystal Cavern (7 materials)',value='crystal'),app_commands.Choice(name='Ancient Ruins (200 gold, 4 materials)',value='ruins')])
 async def activities(interaction:discord.Interaction,activity:app_commands.Choice[str]):
     async with lock:
         p=get_player(interaction.user.id)
@@ -1088,7 +1114,7 @@ async def activities(interaction:discord.Interaction,activity:app_commands.Choic
         if event_state()!='active':return await ui_reply(interaction, 'Activities are available during the seven-day dungeon event.',ephemeral=True)
         p=grant_stamina(interaction.user.id)
         if p['stamina']<1:return await ui_reply(interaction, f'No activity stamina left. You gain 15 at 00:00 UTC daily and +1 every 2 hours (maximum 45). {stamina_next_regen(p)}.',ephemeral=True)
-        gold,mats={'mine':(220,0),'crystal':(0,4),'ruins':(105,2)}[activity.value]
+        gold,mats={'mine':(380,0),'crystal':(0,7),'ruins':(200,4)}[activity.value]
         if kingdom_event()[2]=='materials':mats+=1
         if kingdom_event()[2]=='activity_gold':gold=round(gold*1.10)
         mission_progress(interaction.user.id,'gather')
@@ -1101,6 +1127,37 @@ async def activities(interaction:discord.Interaction,activity:app_commands.Choic
             conn.commit()
         updated=get_player(interaction.user.id)
     await ui_reply(interaction, f'⛏️ **{activity.name}** complete! +{gold} gold, +{mats} materials. **{remaining}** stamina remaining. 🕒 {stamina_next_regen(updated)}.',ephemeral=True)
+
+@bot.tree.command(name='expedition',description='Start or claim a timed resource expedition')
+@app_commands.describe(minutes='Expedition duration (30, 60 or 120 minutes)')
+@app_commands.choices(minutes=[app_commands.Choice(name='30 minutes',value=30),app_commands.Choice(name='60 minutes',value=60),app_commands.Choice(name='120 minutes',value=120)])
+async def expedition(interaction:discord.Interaction, minutes:app_commands.Choice[int]|None=None):
+    async with lock:
+        uid=interaction.user.id
+        p=get_player(uid)
+        if not p:return await ui_reply(interaction,'Create your fighter first.',ephemeral=True)
+        if event_state()!='active':return await ui_reply(interaction,'Expeditions are available during the seven-day event.',ephemeral=True)
+        now=int(time.time())
+        row=conn.execute('SELECT * FROM expeditions WHERE user_id=?',(uid,)).fetchone()
+        if row and not row['claimed']:
+            if now<row['finishes_at']:
+                return await ui_reply(interaction,f'🧭 Expedition underway. Ready in **{max(1,(row["finishes_at"]-now+59)//60)} minutes**. Run `/expedition` again to claim.',ephemeral=True)
+            duration=row['duration_minutes']
+            gold,mats={30:(250,4),60:(550,9),120:(1200,18)}[duration]
+            day=event_day()
+            conn.execute('INSERT INTO expedition_daily(user_id,day,completed) VALUES(?,?,1) ON CONFLICT(user_id,day) DO UPDATE SET completed=completed+1',(uid,day))
+            conn.execute('UPDATE expeditions SET claimed=1 WHERE user_id=?',(uid,))
+            conn.execute('UPDATE players SET gold=gold+?,materials=materials+? WHERE user_id=?',(gold,mats,uid))
+            conn.commit()
+            return await ui_reply(interaction,f'🎒 Expedition complete! Collected **{gold:,} gold** and **{mats} materials**. Start another expedition whenever you are ready.',ephemeral=True)
+        if minutes is None:
+            return await ui_reply(interaction,'Choose `/expedition` with 30, 60 or 120 minutes. Claim up to two expeditions per UTC day; one at a time. You can fight while they run.',ephemeral=True)
+        duration=minutes.value
+        daily=conn.execute('SELECT completed FROM expedition_daily WHERE user_id=? AND day=?',(uid,event_day())).fetchone()
+        if daily and daily['completed']>=2:return await ui_reply(interaction,'You have claimed both expedition rewards for today. Return after the UTC daily reset.',ephemeral=True)
+        conn.execute('INSERT INTO expeditions(user_id,started_at,finishes_at,duration_minutes,claimed) VALUES(?,?,?,?,0) ON CONFLICT(user_id) DO UPDATE SET started_at=excluded.started_at,finishes_at=excluded.finishes_at,duration_minutes=excluded.duration_minutes,claimed=0',(uid,now,now+duration*60,duration))
+        conn.commit()
+    await ui_reply(interaction,f'🧭 **{duration}-minute expedition started!** You can continue battling. Use `/expedition` to collect your rewards after it finishes.',ephemeral=True)
 
 @bot.tree.command(name='stamina',description='Check your activity stamina and next regeneration')
 async def stamina_status(interaction:discord.Interaction):
@@ -1630,7 +1687,7 @@ class ActionsView(OwnedView):
         self.kind=kind
         configs={
             'stats':('Spend attribute points',[(x.title(),x,'Improve '+x.title()) for x in STAT_NAMES]),
-            'activity':('Choose resource expedition', [('Ancient Ruins','ruins','105 gold + 2 materials'),('Gold Mine','mine','220 gold'),('Crystal Cavern','crystal','4 materials')]),
+            'activity':('Choose resource activity', [('Ancient Ruins','ruins','200 gold + 4 materials'),('Gold Mine','mine','380 gold'),('Crystal Cavern','crystal','7 materials')]),
             'skill':('Choose permanent specialization',[('Berserker','Berserker','Attack-focused fighter'),('Guardian','Guardian','Defence-focused fighter'),('Arcanist','Arcanist','Energy-focused fighter')]),
             'enchant':('Choose enchantment',[('Flame','Flame','+3.5% attack'),('Ward','Ward','+4.5% HP')]),
             'advance':('Choose advanced forging',[('Weapon','weapon','Requires +10 weapon and Floor 40'),('Armour','armor','Requires +10 armour and Floor 40')]),
@@ -1713,6 +1770,8 @@ class ForgeMenu(OwnedView):
     async def back(self,i,b): await open_castle(i)
 
 class GatherMenu(OwnedView):
+    @discord.ui.button(label='Expedition Board',emoji='🧭',style=discord.ButtonStyle.secondary,row=1)
+    async def expedition_board(self,i,b):await expedition.callback(i,None)
     @discord.ui.button(label='Gather Resources',emoji='⛏️',style=discord.ButtonStyle.primary,row=0)
     async def gather(self,i,b): await open_actions(i,'activity')
     @discord.ui.button(label='Check Stamina',emoji='⏳',style=discord.ButtonStyle.secondary,row=0)
@@ -1878,7 +1937,7 @@ class MissionView(OwnedView):
             if not done:return await ui_reply(i,'Claim all three daily missions first.')
             cur=conn.execute('INSERT OR IGNORE INTO daily_bonuses(user_id,day,claimed) VALUES(?,?,1)',(self.uid,day))
             if cur.rowcount:
-                conn.execute('UPDATE players SET gold=gold+500,materials=materials+10 WHERE user_id=?',(self.uid,));notice='Daily completion bonus: +500 gold and +10 materials!'
+                conn.execute('UPDATE players SET gold=gold+700,materials=materials+12 WHERE user_id=?',(self.uid,));notice='Daily completion bonus: +700 gold and +12 materials!'
             else:notice='You already claimed today’s bonus.'
             conn.commit()
         await mission_menu(i,notice=notice)
@@ -1892,7 +1951,7 @@ async def mission_menu(i,notice=None):
         row=conn.execute('SELECT progress,claimed FROM daily_missions WHERE user_id=? AND day=? AND mission=?',(i.user.id,day,kind)).fetchone()
         progress=row['progress'] if row else 0
         e.add_field(name=desc,value=f'{min(progress,goal)}/{goal} • +{g} gold, +{m} materials • '+('Claimed' if row and row['claimed'] else 'Ready to claim' if progress>=goal else 'In progress'),inline=False)
-    e.set_footer(text='Complete and claim all 3 missions for 500 extra gold + 10 materials. No Arena score effects.')
+    e.set_footer(text='Complete and claim all 3 missions for 700 extra gold + 12 materials. No Arena score effects.')
     await ui_reply(i,embed=e,view=MissionView(i.user.id),ephemeral=True)
 
 class KingdomEventsView(OwnedView):
@@ -2075,7 +2134,7 @@ else:
 # Public /play and /leaderboard, plus admin-only /reset. Other handlers remain
 # callable by the UI, with no Championship Arena.
 for _cmd in list(bot.tree.get_commands()):
-    if _cmd.name not in ('play', 'leaderboard', 'reset', 'arena', 'arena-score'): bot.tree.remove_command(_cmd.name)
+    if _cmd.name not in ('play', 'leaderboard', 'reset', 'arena', 'arena-score', 'expedition'): bot.tree.remove_command(_cmd.name)
 
 @bot.event
 async def on_ready():
