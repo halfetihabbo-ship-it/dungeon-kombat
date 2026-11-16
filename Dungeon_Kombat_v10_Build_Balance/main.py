@@ -381,8 +381,8 @@ TIER_NAMES=('Iron','Steel','Obsidian','Mithril','Dragonforged','Voidsteel','Cele
 WEAPON_TIER_BONUS=(0,.07,.14,.21,.28,.35,.42,.49,.56,.63)
 ARMOUR_HP_BONUS=(0,.07,.14,.21,.28,.35,.42,.49,.56,.63)
 ARMOUR_DEF_BONUS=(0,.045,.09,.135,.18,.225,.27,.315,.36,.405)
-TIER_GOLD=(0,3500,8500,6200,8400,10800,11700,9800,16500,19500)
-TIER_MATERIALS=(0,28,65,47,64,83,92,82,96,115)
+TIER_GOLD=(0,3500,8500,6200,8400,9000,7800,6100,16500,19500)
+TIER_MATERIALS=(0,28,65,47,64,69,60,52,96,115)
 
 def tier_label(p,kind):
     tier=p['weapon_tier'] if kind=='weapon' else p['armor_tier']
@@ -391,8 +391,11 @@ def tier_label(p,kind):
 def stats(p):
     def effective(n):
         return min(n,40)+max(0,min(n-40,40))*.48+max(0,n-80)*.10
+    # Strength-only adjustment: other attributes and equipment retain v41 scaling.
+    def effective_strength(n):
+        return min(n,30)+max(0,min(n-30,30))*.55+max(0,n-60)*.16
     hp=int(115+min(150,p['floor'])*1.65+effective(p['vitality'])*5+p['armor_upgrade']*6)
-    atk=int(20+effective(p['strength'])*2+(10+p['weapon_stage']*22+p['weapon_upgrade']*4)*WEAPONS[p['weapon']][0])
+    atk=int(20+effective_strength(p['strength'])*1.70+(10+p['weapon_stage']*22+p['weapon_upgrade']*4)*WEAPONS[p['weapon']][0])
     defense=int(10+effective(p['defence'])+p['armor_upgrade']*4)
     speed=int(10+effective(p['agility']))
     energy=int(50+effective(p['energy'])*3)
@@ -463,6 +466,9 @@ def enemy_stats(floor):
         hp *= 1.0 + 0.42 * late_boss_progress
         attack *= 1.0 + 0.075 * late_boss_progress
         defense *= 1.0 + 0.08 * late_boss_progress
+        # v46: final boss endurance relief only; attack and defence unchanged.
+        if floor == 150:
+            hp *= 0.80
         # Predictable boss counterplay is more important than lucky retries.
         if floor == 40:
             # Plague Keeper was overtuned by poison, shielding and enrage stacking.
@@ -481,6 +487,23 @@ def enemy_stats(floor):
     # No increase to enemy attack; defensive builds remain viable.
     late_progress = min(1.0, max(0.0, (floor - 100) / 50.0))
     hp *= 1.0 + (0.14 if boss else 0.22) * late_progress
+    # v45: normal enemies become progressively tougher. Bosses retain v44 stats.
+    # The within-decade HP ramp makes floors 7-9 a lead-in to the boss.
+    if not boss:
+        if floor <= 20: hp_bonus, atk_bonus, def_bonus = 0.0, 0.0, 0.0
+        elif floor <= 40: hp_bonus, atk_bonus, def_bonus = .05, .03, .03
+        elif floor <= 60: hp_bonus, atk_bonus, def_bonus = .10, .06, .05
+        elif floor <= 80: hp_bonus, atk_bonus, def_bonus = .15, .08, .08
+        elif floor <= 100: hp_bonus, atk_bonus, def_bonus = .20, .10, .10
+        elif floor <= 120: hp_bonus, atk_bonus, def_bonus = .25, .12, .12
+        else: hp_bonus, atk_bonus, def_bonus = .30, .15, .15
+        # +0%, +3%, +6%, +9%, +12% HP across each nine-floor section.
+        step = (floor - 1) % 10
+        approach_bonus = (min(4, step // 2) * .03) if floor > 20 else 0.0
+        hp *= 1.0 + hp_bonus
+        hp *= 1.0 + approach_bonus
+        attack *= 1.0 + atk_bonus
+        defense *= 1.0 + def_bonus
     return round(hp),round(attack),round(defense),boss
 
 def reward_for_floor(floor):
