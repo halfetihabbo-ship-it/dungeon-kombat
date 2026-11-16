@@ -470,6 +470,11 @@ def enemy_stats(floor):
         if floor>=160:
             hp *= .96
             attack *= .96
+    # v38: late-floor endurance is a gradual preparation check, not a damage spike.
+    # At floor 100: no change. At floor 150: +22% normal HP / +14% boss HP.
+    # No increase to enemy attack; defensive builds remain viable.
+    late_progress = min(1.0, max(0.0, (floor - 100) / 50.0))
+    hp *= 1.0 + (0.14 if boss else 0.22) * late_progress
     return round(hp),round(attack),round(defense),boss
 
 def reward_for_floor(floor):
