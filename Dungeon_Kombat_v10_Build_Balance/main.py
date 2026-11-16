@@ -1,4 +1,4 @@
-"""Dungeon Kombat — seven-day endless-floor Discord dungeon tournament.
+"""Dungeon Kombat — seven-day capped-floor Discord dungeon tournament.
 Python 3.11+, discord.py 2.4+, Pillow. All database writes are serialized.
 """
 import asyncio
@@ -16,18 +16,14 @@ from discord import app_commands
 from discord.ext import commands
 from PIL import Image, ImageDraw, ImageFont
 from visuals import floor_file, panel_file
+import arena as championship_arena
 
 TOKEN = os.getenv('DISCORD_TOKEN', '')
 GUILD_ID = os.getenv('GUILD_ID', '')
-TEST_MODE = os.getenv('DUNGEON_TEST_MODE', '0').strip() == '1'
 DB_PATH = os.getenv('DATABASE_PATH', '/data/dungeon_kombat.db' if Path('/data').exists() else 'dungeon_kombat.db')
-if TEST_MODE:
-    # Explicitly isolate test data even if production DATABASE_PATH is configured.
-    DB_PATH = os.getenv('TEST_DATABASE_PATH', '/data/dungeon_kombat_test.db' if Path('/data').exists() else 'dungeon_kombat_test.db')
-    if Path(DB_PATH).resolve() == Path(os.getenv('DATABASE_PATH', '/data/dungeon_kombat.db' if Path('/data').exists() else 'dungeon_kombat.db')).resolve():
-        raise RuntimeError('TEST_DATABASE_PATH must differ from production DATABASE_PATH')
 START_DATE = os.getenv('EVENT_START_DATE', '2026-11-14')  # UTC, inclusive
 DAYS = 7
+MAX_DUNGEON_FLOOR = 150
 STAMINA_CAP = 45
 STAMINA_DAILY = 15
 STAMINA_REGEN_SECONDS = 2 * 60 * 60
@@ -148,10 +144,10 @@ if 'active_companion' not in {r[1] for r in conn.execute('PRAGMA table_info(play
 conn.commit()
 
 # v27: deterministic progression; old collection data remains stored but provides no combat bonuses.
-SKILL_BRANCHES={'Offence':('Attack',.012,4),'Vitality':('HP',.015,4),'Protection':('Defence',.018,4)}
-COMPANIONS={'Dire Wolf':(15,800,8,'Attack',.025),'Healing Fairy':(45,2500,20,'HP',.035),'Stone Golem':(85,5000,40,'Defence',.045)}
-COMPANION_UPGRADE_GOLD=(0,1200,2800)
-COMPANION_UPGRADE_MATS=(0,12,25)
+SKILL_BRANCHES={'Offence':('Attack',.018,4),'Vitality':('HP',.022,4),'Protection':('Defence',.028,4)}
+COMPANIONS={'Dire Wolf':(15,800,8,'Attack',.045),'Healing Fairy':(45,2500,20,'HP',.065),'Stone Golem':(85,5000,40,'Defence',.075)}
+COMPANION_UPGRADE_GOLD=(0,800,1800)
+COMPANION_UPGRADE_MATS=(0,8,16)
 def skill_points(p):
     earned=min(12,max(0,p['floor']//15))
     spent=conn.execute('SELECT COALESCE(SUM(level),0) FROM dungeon_skills WHERE user_id=?',(p['user_id'],)).fetchone()[0]
@@ -162,7 +158,7 @@ def companion_bonus(p):
     r=conn.execute('SELECT level FROM dungeon_companions WHERE user_id=? AND companion=?',(p['user_id'],name)).fetchone()
     if not r:return None,0
     spec=COMPANIONS[name]
-    return spec[3],spec[4]+(r['level']-1)*.012
+    return spec[3],spec[4]+(r['level']-1)*.018
 
 def skill_bonus(p,branch):
     r=conn.execute('SELECT level FROM dungeon_skills WHERE user_id=? AND branch=?',(p['user_id'],branch)).fetchone()
@@ -309,7 +305,6 @@ intents = discord.Intents.default()
 bot = commands.Bot(command_prefix='!', intents=intents)
 
 def event_day():
-    if TEST_MODE: return 1
     start = datetime.strptime(START_DATE, '%Y-%m-%d').replace(tzinfo=timezone.utc)
     return (datetime.now(timezone.utc) - start).days + 1
 
@@ -373,14 +368,15 @@ def stamina_next_regen(p, now=None):
     return f'{hours}h {minutes}m until +1 stamina'
 
 def advanced_cost(level):
-    return 4500+2200*level,22+12*level
+    return 2400+1150*level,12+6*level
 
 TIER_NAMES=('Iron','Steel','Obsidian','Mithril','Dragonforged','Voidsteel','Celestial','Infernal','Ascendant','Godslayer')
-WEAPON_TIER_BONUS=(0,.05,.10,.15,.20,.24,.27,.30,.32,.34)
-ARMOUR_HP_BONUS=(0,.05,.10,.15,.20,.24,.27,.30,.32,.34)
-ARMOUR_DEF_BONUS=(0,.03,.06,.09,.12,.14,.16,.18,.19,.20)
-TIER_GOLD=(0,1200,2400,4000,6000,8500,11000,14000,17000,20000)
-TIER_MATERIALS=(0,10,18,28,39,60,75,90,105,120)
+# Tiers 9-10 are reserved for future Arena content; floor 150 dungeon can unlock at most Tier 8.
+WEAPON_TIER_BONUS=(0,.07,.14,.21,.28,.35,.42,.49,.56,.63)
+ARMOUR_HP_BONUS=(0,.07,.14,.21,.28,.35,.42,.49,.56,.63)
+ARMOUR_DEF_BONUS=(0,.045,.09,.135,.18,.225,.27,.315,.36,.405)
+TIER_GOLD=(0,1000,2200,3700,5600,7900,10500,13500,16500,19500)
+TIER_MATERIALS=(0,9,17,26,36,48,62,78,96,115)
 
 def tier_label(p,kind):
     tier=p['weapon_tier'] if kind=='weapon' else p['armor_tier']
@@ -389,25 +385,35 @@ def tier_label(p,kind):
 def stats(p):
     def effective(n):
         return min(n,40)+max(0,min(n-40,40))*.6+max(0,n-80)*.3
-    hp=int(100+effective(p['vitality'])*5+p['armor_upgrade']*4)
+    hp=int(115+min(150,p['floor'])*1.65+effective(p['vitality'])*5+p['armor_upgrade']*6)
     atk=int(20+effective(p['strength'])*2+(10+p['weapon_stage']*22+p['weapon_upgrade']*4)*WEAPONS[p['weapon']][0])
     defense=int(10+effective(p['defence'])+p['armor_upgrade']*4)
     speed=int(10+effective(p['agility']))
     energy=int(50+effective(p['energy'])*3)
-    hp+=p['armor_advanced']*10
-    defense+=p['armor_advanced']*4
-    atk+=p['weapon_advanced']*8
-    if p['skill']=='Berserker': atk=round(atk*1.15);hp=round(hp*1.21)
-    elif p['skill']=='Guardian': defense=round(defense*1.16);hp=round(hp*1.13);atk=round(atk*1.09)
-    elif p['skill']=='Arcanist': energy+=20;atk=round(atk*1.23);hp=round(hp*1.12)
+    hp+=p['armor_advanced']*24
+    defense+=p['armor_advanced']*9
+    atk+=p['weapon_advanced']*13
+    if p['skill']=='Berserker': atk=round(atk*1.15);hp=round(hp*1.16)
+    elif p['skill']=='Guardian': defense=round(defense*1.22);hp=round(hp*1.20);atk=round(atk*1.09)
+    elif p['skill']=='Arcanist': energy+=20;atk=round(atk*1.20);hp=round(hp*1.10)
     hp=round(hp*(1+min(p['relics'],10)*.005))
-    if p['enchantment']=='Flame': atk=round(atk*1.035)
-    elif p['enchantment']=='Ward': hp=round(hp*1.045)
+    if p['enchantment']=='Flame': atk=round(atk*1.065)
+    elif p['enchantment']=='Ward': hp=round(hp*1.085)
     if p['blessing_floors']>0:
         if p['blessing']=='supplies': hp=round(hp*1.05)
         elif p['blessing']=='knight': defense=round(defense*1.08)
         elif p['blessing']=='berserker': atk=round(atk*1.08)
-    # Legacy collectible equipment no longer affects stats; retained in DB for rollback.
+    # v31: Equipped amulets and bonus armour grant their advertised combat bonuses.
+    # Historical items remain available; unequipped inventory provides no bonuses.
+    for slot in ('equipped_weapon','equipped_armor'):
+        item=p[slot]
+        data=COLLECTIBLES.get(item)
+        if not data: continue
+        if data[0]=='weapon': atk=round(atk*(1+data[2]))
+        elif data[3]>=.023:
+            hp=round(hp*(1+min(.035,data[3])))
+            defense=round(defense*(1+min(.025,data[3]*.70)))
+        else: hp=round(hp*(1+data[3]))
     if 'user_id' in p.keys():
         atk=round(atk*(1+skill_bonus(p,'Offence')))
         hp=round(hp*(1+skill_bonus(p,'Vitality')))
@@ -441,30 +447,39 @@ def enemy_stats(floor):
     attack *= 1+.001*over
     defense *= 1+.001*over
     if boss:
-        hp *= 1.52*(1.06+.003*min(floor//10,10))
-        attack *= 1.18*(1.04+.002*min(floor//10,10))
+        hp *= (1.42 + .20*min(1,floor/150))*(1.06+.003*min(floor//10,10))
+        attack *= (1.08 + .07*min(1,floor/150))*(1.04+.002*min(floor//10,10))
         defense *= 1.15
+        # v33: late-boss endurance scales smoothly from floor 90 to the 150 finale.
+        # Extra HP rewards investing in weapon tiers/forging without making bosses
+        # one-shot characters who prioritise armour and Vitality.
+        late_boss_progress = min(1.0, max(0.0, (floor - 90) / 60.0))
+        hp *= 1.0 + 0.42 * late_boss_progress
+        attack *= 1.0 + 0.075 * late_boss_progress
+        defense *= 1.0 + 0.08 * late_boss_progress
         # Predictable boss counterplay is more important than lucky retries.
         if floor == 40:
             # Plague Keeper was overtuned by poison, shielding and enrage stacking.
-            hp *= 0.82 * 0.62
-            attack *= 0.92 * 0.75
-        if floor>=80:
-            hp *= .58
-            attack *= .66
+            hp *= 0.90 * 0.94
+            attack *= 0.95 * 0.95
+        # Gradual high-floor relief avoids the floor-70 to floor-80 difficulty cliff.
+        if floor>=60:
+            relief=min(1,max(0,(floor-60)/50))
+            hp *= 1-.13*relief
+            attack *= 1-.13*relief
         if floor>=160:
-            hp *= .93
-            attack *= .94
+            hp *= .96
+            attack *= .96
     return round(hp),round(attack),round(defense),boss
 
 def reward_for_floor(floor):
     """Deterministic first-clear rewards; boss chests include extra gold/materials."""
     band = min(10,(floor - 1) // 10)
     gold = 90 + 12*min(floor,110) + 15*band
-    mats = 1 + min(floor,180) // 40 + max(0,min(5,(floor-60)//30))
+    mats = 2 + min(floor,150) // 30 + max(0,min(4,(floor-60)//30))
     if floor % 10 == 0:
         gold += 350 + 60*band
-        mats += 6 + band
+        mats += 8 + band
     return gold, mats
 
 # Adventure encounters are first-clear only. No extra dungeon attempts are spent.
@@ -494,7 +509,7 @@ def enemy_intent(b):
     phase=boss_phase(b)
     rng=random.Random(b['seed']+b['turn']*397+phase*13)
     options=['heavy','guard','reckless','normal']
-    if 11<=b['floor']<80 and b['floor']!=40: options.append('venom')
+    if 11<=b['floor']<80 and b['floor'] not in (40,50): options.append('venom')
     if phase>=2: options+=['heavy','guard']
     if phase==3: options+=['reckless','heavy']
     return rng.choice(options)
@@ -515,7 +530,7 @@ MERCHANT_ITEMS={
  'relic':('Relic Fragments',1200,0,'Gain 5 materials and 300 gold back.')}
 
 def damage_reduction(defense):
-    return max(.45, 100/(100+min(defense,75)*.65+max(0,defense-75)*.09))
+    return max(.38, 100/(100+min(defense,75)*.65+max(0,defense-75)*.19))
 
 def free_points(p):
     return p['floor']*3 - sum(p[s] for s in STAT_NAMES)
@@ -738,8 +753,8 @@ def battle_embed(p, b, message=None):
     enemyhp, enemyatk, enemydef, boss = enemy_stats(b['floor'])
     e = discord.Embed(title=f'⚔️ Floor {b["floor"]} — {"BOSS" if boss else "Monster"}', description=f'**{TIERS[min((b["floor"]-1)//10,9)]}**\n{message or b["log"]}', color=discord.Color.red() if boss else discord.Color.dark_blue())
     e.add_field(name=f'🧍 {p["name"]}', value=f'❤️ {b["hp"]}/{maxhp}\n🔮 {b["energy"]}/{maxenergy}\n💚 {b["potions"]} potions')
-    e.add_field(name='💀 Enemy', value=f'❤️ {b["enemy_hp"]}/{enemyhp}\n⚔️ {enemyatk} ATK\n🛡️ {enemydef} DEF' + ('\n🛡️ Shielded: normal attacks effective' if boss and b['floor']>=20 and b['floor']!=40 and b['turn']%5 in (1,2) else ''))
-    e.add_field(name='Turn', value=f'{b["turn"]}/{30 if boss else 20} • Special cooldown: {b["special_cd"]}' + (f' • 🔥 Boss enrage +{min(35,(b["turn"]-8)*10)}% incoming damage' if boss and b['floor']!=40 and b['turn']>8 else ''), inline=False)
+    e.add_field(name='💀 Enemy', value=f'❤️ {b["enemy_hp"]}/{enemyhp}\n⚔️ {enemyatk} ATK\n🛡️ {enemydef} DEF' + ('\n🛡️ Shielded: special attacks effective' if boss and b['floor']>=20 and b['floor']!=40 and b['turn']%5 in (1,2) else ''))
+    e.add_field(name='Turn', value=f'{b["turn"]}/{30 if boss else 20} • Special cooldown: {b["special_cd"]}' + (f' • 🔥 Boss enrage +{min(15,(b["turn"]-8)*5)}% incoming damage' if boss and b['floor']!=40 and b['turn']>8 else ''), inline=False)
     intent=enemy_intent(b)
     e.add_field(name='📜 Enemy Intention',value=INTENT_TEXT[intent],inline=False)
     if boss:
@@ -775,11 +790,11 @@ async def resolve_action(interaction, action):
                 cooldown=3
                 # Each weapon has a distinct combat effect.
                 if p['weapon'] == 'Axe': multiplier = 1.55
-                elif p['weapon'] == 'Daggers': multiplier = 1.53
+                elif p['weapon'] == 'Daggers': multiplier = 1.61
                 elif p['weapon'] == 'Staff': multiplier = 1.56
                 elif p['weapon'] == 'Spear': multiplier = 1.53
             shielded=boss and 20<=b['floor']<80 and b['floor']!=40 and b['turn']%5 in (1,2)
-            if shielded: multiplier *= (.48 if action=='special' else 1.55)
+            if shielded: multiplier *= (1.05 if action=='special' else .72)
             if action=='attack': energy=min(maxenergy,energy+7)
             if focused: multiplier *= 1.15
             base = max(1, round(atk * multiplier * damage_reduction(enemydef)))
@@ -794,7 +809,7 @@ async def resolve_action(interaction, action):
         elif action == 'defend':
             notes.append('🛡️ You defend against the next attack.')
         elif action == 'heal':
-            recovered = min(maxhp-hp, max(30,round(maxhp*0.3)))
+            recovered = min(maxhp-hp, max(30,round(maxhp*0.35)))
             hp += recovered
             potions -= 1
             notes.append(f'💚 Restored **{recovered}** HP.')
@@ -818,13 +833,13 @@ async def resolve_action(interaction, action):
         if enemyhp > 0:
             rng = random.Random(b['seed'] + b['turn']*157)
             incoming = round(enemyatk*damage_reduction(defense)*rng.uniform(0.9,1.1))
-            if charge and b['floor']!=40: incoming = round(incoming*(1.55 if b['floor']>=80 else 2.1))
-            elif intent=='heavy': incoming=round(incoming*1.45)
+            if charge and b['floor']!=40: incoming = round(incoming*1.40)
+            elif intent=='heavy': incoming=round(incoming*1.30)
             elif intent=='reckless': incoming=round(incoming*.82)
             elif intent=='guard': incoming=round(incoming*.72)
-            if boss and b['floor']<80 and b['floor']!=40 and phase==2: incoming=round(incoming*1.07)
-            elif boss and b['floor']<80 and b['floor']!=40 and phase==3: incoming=round(incoming*1.14)
-            if boss and b['floor']<80 and b['floor']!=40 and b['turn']>8: incoming=round(incoming*(1+min(.35,.10*(b['turn']-8))))
+            if boss and b['floor']<80 and b['floor']!=40 and phase==2: incoming=round(incoming*1.04)
+            elif boss and b['floor']<80 and b['floor']!=40 and phase==3: incoming=round(incoming*1.08)
+            if boss and b['floor']<80 and b['floor']!=40 and b['turn']>8: incoming=round(incoming*(1+min(.15,.05*(b['turn']-8))))
             if guard: incoming = max(1,round(incoming*0.55))
             # Dodge soft cap: no more than 20%.
             dodge = min(0.2, max(0, (speed-10)*0.001))
@@ -834,19 +849,19 @@ async def resolve_action(interaction, action):
             hp = max(0,hp-incoming)
             notes.append(f'💀 Enemy hits for **{incoming}** damage.')
             if poison:
-                tick = max(1,round(maxhp*0.04))
+                tick = max(1,round(maxhp*0.025))
                 hp = max(0,hp-tick)
                 poison -= 1
                 notes.append(f'☠️ Poison deals **{tick}** damage.')
-            if 11<=b['floor']<80 and b['floor']!=40 and intent=='venom' and not guard and not poison:
+            if 11<=b['floor']<80 and b['floor'] not in (40,50) and intent=='venom' and not guard and not poison:
                 poison = 2
                 notes.append('☠️ The enemy poisons you for two turns!')
-            charge = 1 if 31<=b['floor']<80 and b['floor']!=40 and b['turn'] % 4 == 0 else 0
+            charge = 1 if 31<=b['floor']<80 and b['floor'] not in (40,50) and b['turn'] % 4 == 0 else 0
         nextturn = b['turn']+1
         won = enemyhp == 0
         lost = hp <= 0 or nextturn > (30 if boss else 20)
         if won:
-            floor = b['floor']
+            floor = min(b['floor'], MAX_DUNGEON_FLOOR)
             gold, mats = reward_for_floor(floor)
             if kingdom_event()[2]=='gold':gold=round(gold*1.10)
             mission_progress(interaction.user.id,'dungeon')
@@ -854,6 +869,8 @@ async def resolve_action(interaction, action):
             conn.execute('UPDATE players SET floor=?,gold=gold+?,materials=materials+?,total_turns=total_turns+?,respecs=respecs+? WHERE user_id=?', (floor,gold,mats,b['turn'],respec,interaction.user.id))
             conn.execute('DELETE FROM battles WHERE user_id=?',(interaction.user.id,))
             notes.append(f'🏆 **VICTORY!** Floor {floor} cleared. +{gold} gold, +{mats} materials, +3 stat points.' + (' 🎁 Boss chest included! +1 respec token.' if boss else ''))
+            if floor == MAX_DUNGEON_FLOOR:
+                notes.append('👑 **DUNGEON COMPLETE!** You have defeated the final boss. Your fighter qualifies for the Championship Arena on days 8–9!')
             if floor>=5 and p['skill']=='None':
                 notes.append('🌳 **FIGHTER BUILD AVAILABLE!** Choose Berserker, Guardian or Arcanist. Select **Choose Build** below or visit My Fighter. Your choice is permanent.')
             if floor in (20,40,60,80):
@@ -1022,7 +1039,7 @@ async def wallet(interaction: discord.Interaction):
             detail=f'+{level} → +{level+1}: **{g:,} gold** and **{m} materials**\n'+('✅ Affordable' if p['gold']>=g and p['materials']>=m else '❌ Not yet affordable')
         e.add_field(name=title,value=detail,inline=False)
     e.add_field(name='Tier forging',value=f'{tier_label(p,"weapon")} • {p["weapon_cores"]} weapon cores\n{tier_label(p,"armor")} • {p["armor_cores"]} armour cores\nVisit Blacksmith → Forge Weapon & Armour Tiers.',inline=False)
-    e.add_field(name='Advanced forging',value=f'Weapon +{p["weapon_advanced"]}/5 • Armour +{p["armor_advanced"]}/5. Unlock at Floor 50 after +10. Open `/play` → Blacksmith → Advanced Forging.',inline=False)
+    e.add_field(name='Advanced forging',value=f'Weapon +{p["weapon_advanced"]}/5 • Armour +{p["armor_advanced"]}/5. Unlock at Floor 40 after +10. Open `/play` → Blacksmith → Advanced Forging.',inline=False)
     e.set_footer(text='Boss chests award bonus resources every 10 floors. Rewards are first-clear only.')
     e.set_image(url='attachment://dungeon-panel.png')
     await ui_reply(interaction, embed=e,file=panel_file('wallet'),ephemeral=True)
@@ -1044,6 +1061,8 @@ async def dungeon(interaction: discord.Interaction):
             if event_state()!='active':
                 return await ui_reply(interaction, 'Dungeon attempts are available only during the seven-day event. Check `/event`.',ephemeral=True)
             p = grant_attempts(interaction.user.id)
+            if p['floor'] >= MAX_DUNGEON_FLOOR:
+                return await ui_reply(interaction, '🏆 You have cleared Floor 150, the final dungeon boss! The Championship Arena opens on days 8–9. Your equipment and progress are saved.', ephemeral=True)
             floor = p['floor']+1
             enemyhp,_,_,_ = enemy_stats(floor)
             hp,_,_,_,energy = stats(p)
@@ -1056,7 +1075,7 @@ async def dungeon(interaction: discord.Interaction):
     await ui_reply(interaction, embed=embed,file=floor_file(b['floor']),view=BattleView(interaction.user.id),ephemeral=True)
 
 @bot.tree.command(name='activities',description='Earn resources through daily stamina-limited activities')
-@app_commands.choices(activity=[app_commands.Choice(name='Gold Mine (80 gold)',value='mine'),app_commands.Choice(name='Crystal Cavern (2 materials)',value='crystal'),app_commands.Choice(name='Ancient Ruins (110 gold, 2 materials)',value='ruins')])
+@app_commands.choices(activity=[app_commands.Choice(name='Gold Mine (220 gold)',value='mine'),app_commands.Choice(name='Crystal Cavern (4 materials)',value='crystal'),app_commands.Choice(name='Ancient Ruins (105 gold, 2 materials)',value='ruins')])
 async def activities(interaction:discord.Interaction,activity:app_commands.Choice[str]):
     async with lock:
         p=get_player(interaction.user.id)
@@ -1064,7 +1083,7 @@ async def activities(interaction:discord.Interaction,activity:app_commands.Choic
         if event_state()!='active':return await ui_reply(interaction, 'Activities are available during the seven-day dungeon event.',ephemeral=True)
         p=grant_stamina(interaction.user.id)
         if p['stamina']<1:return await ui_reply(interaction, f'No activity stamina left. You gain 15 at 00:00 UTC daily and +1 every 2 hours (maximum 45). {stamina_next_regen(p)}.',ephemeral=True)
-        gold,mats={'mine':(80,0),'crystal':(0,2),'ruins':(110,2)}[activity.value]
+        gold,mats={'mine':(220,0),'crystal':(0,4),'ruins':(105,2)}[activity.value]
         if kingdom_event()[2]=='materials':mats+=1
         if kingdom_event()[2]=='activity_gold':gold=round(gold*1.10)
         mission_progress(interaction.user.id,'gather')
@@ -1105,7 +1124,7 @@ async def skill(interaction:discord.Interaction,path:app_commands.Choice[str]):
     await ui_reply(interaction, f'🌳 **{path.value} selected!**\n{BUILD_DESCRIPTIONS[path.value]}\n\nYour fighter build is now permanent. Return to the Castle Gate to continue.',view=PlayMenu(interaction.user.id),ephemeral=True)
 
 @bot.tree.command(name='enchant',description='Enchant equipment with Flame or Ward (Floor 30+)')
-@app_commands.choices(effect=[app_commands.Choice(name='Flame — +3.5% attack',value='Flame'),app_commands.Choice(name='Ward — +4.5% HP',value='Ward')])
+@app_commands.choices(effect=[app_commands.Choice(name='Flame — +6.5% attack',value='Flame'),app_commands.Choice(name='Ward — +8.5% HP',value='Ward')])
 async def enchant(interaction:discord.Interaction,effect:app_commands.Choice[str]):
     async with lock:
         p=get_player(interaction.user.id)
@@ -1116,12 +1135,12 @@ async def enchant(interaction:discord.Interaction,effect:app_commands.Choice[str
         conn.execute('UPDATE players SET enchantment=?,gold=gold-4000,materials=materials-25 WHERE user_id=?',(effect.value,interaction.user.id));conn.commit()
     await ui_reply(interaction, f'✨ {effect.value} enchantment equipped!',ephemeral=True)
 
-@bot.tree.command(name='advance',description='Upgrade +10 weapon or armour with advanced forging (Floor 50+)')
+@bot.tree.command(name='advance',description='Upgrade +10 weapon or armour with advanced forging (Floor 40+)')
 @app_commands.choices(item=[app_commands.Choice(name='Weapon',value='weapon'),app_commands.Choice(name='Armour',value='armor')])
 async def advance(interaction:discord.Interaction,item:app_commands.Choice[str]):
     async with lock:
         p=get_player(interaction.user.id)
-        if not p or p['floor']<50:return await ui_reply(interaction, 'Advanced forging unlocks at Floor 50.',ephemeral=True)
+        if not p or p['floor']<40:return await ui_reply(interaction, 'Advanced forging unlocks at Floor 40.',ephemeral=True)
         if get_battle(interaction.user.id):return await ui_reply(interaction, 'Finish your battle first.',ephemeral=True)
         key=item.value+'_advanced';lvl=p[key]
         if p[item.value+'_upgrade']<10:return await ui_reply(interaction, 'Reach equipment +10 first.',ephemeral=True)
@@ -1131,27 +1150,51 @@ async def advance(interaction:discord.Interaction,item:app_commands.Choice[str])
         conn.execute(f'UPDATE players SET {key}={key}+1,gold=gold-?,materials=materials-? WHERE user_id=?',(gold,mats,interaction.user.id));conn.commit()
     await ui_reply(interaction, f'🔨 {item.name} advanced to **+{lvl+1}** for {gold:,} gold and {mats} materials.',ephemeral=True)
 
-# Championship Arena retired; historical arena data remains untouched.
+# Arena scoring is installed below and stored in the same persistent database.
 
-@bot.tree.command(name='leaderboard',description='View the solo dungeon tournament rankings')
+@bot.tree.command(name='leaderboard',description='View dungeon qualification and Championship Arena standings')
 async def leaderboard(interaction: discord.Interaction):
+    # Show both stages throughout the competition; partial Arena scores are
+    # provisional and cannot outrank completed challenge sets.
+    day = event_day()
+    min_floor = arena_api['qualification_floor']() if 'arena_api' in globals() else 150
+    arena_rows = conn.execute("""SELECT p.user_id,p.name,p.floor,p.losses,p.spent,p.total_turns,
+        COALESCE(SUM(a.score),0) AS score,
+        SUM(CASE WHEN a.turn=4 THEN 1 ELSE 0 END) AS finished
+        FROM players p JOIN arena_runs a ON p.user_id=a.user_id
+        GROUP BY p.user_id
+        ORDER BY (finished=5) DESC,score DESC,p.floor DESC,p.losses ASC,
+                 p.spent ASC,p.total_turns ASC,p.user_id ASC LIMIT 10""").fetchall()
     rows = conn.execute("""SELECT user_id,name,floor,spent,losses,total_turns
-        FROM players ORDER BY floor DESC, losses ASC, spent ASC,
-        total_turns ASC, user_id ASC LIMIT 15""").fetchall()
-    e=discord.Embed(title='🏆 Endless Dungeon Rankings',description='Highest completed floor wins. Ties: fewer defeats, then fewer attempts, then fewer turns.',color=discord.Color.gold())
-    if not rows: e.description='No fighters have registered yet.'
+        FROM players ORDER BY floor DESC,losses ASC,spent ASC,
+        total_turns ASC,user_id ASC LIMIT 10""").fetchall()
+    e=discord.Embed(title='🏆 Dungeon Kombat Rankings',color=discord.Color.gold())
+    if arena_rows:
+        e.add_field(name='🏟️ Championship Arena',value='Completed runs rank ahead of unfinished runs. Ties: floor, fewer defeats, fewer attempts, fewer turns.',inline=False)
+        for i,p in enumerate(arena_rows):
+            complete=p['finished']==5
+            label=f'{["🥇","🥈","🥉"][i] if i<3 and complete else str(i+1)+"."} {p["name"]}'
+            e.add_field(name=label,value=f'**{p["score"]}/500** • {p["finished"]}/5 challenges '+('✅ Complete' if complete else '⏳ In progress'),inline=False)
+    else:
+        e.description='Arena results will appear here once participants begin.'
+    if day >= 8 and min_floor < 150:
+        e.add_field(name='Qualification fallback',value=('No dungeon progress recorded.' if min_floor>150 else f'Nobody cleared Floor 150. Fighters at Floor **{min_floor}+** can enter the Arena.'),inline=False)
+    e.add_field(name='⚔️ Dungeon standings',value='Top dungeon progress • final Arena winners are ranked above.',inline=False)
+    if not rows:
+        e.add_field(name='No fighters yet',value='Use `/play` to join.',inline=False)
     else:
         for i,p in enumerate(rows):
-            e.add_field(name=f'{["🥇","🥈","🥉"][i] if i<3 else str(i+1)+"."} {p["name"]}',value=f'Floor **{p["floor"]}** • {p["losses"]} defeats • {p["spent"]} attempts',inline=False)
-    e.set_image(url="attachment://dungeon-panel.png")
-    await ui_reply(interaction, embed=e,file=panel_file("leaderboard"),ephemeral=True)
+            mark=' 🎟️' if day>=8 and p['floor']>=min_floor else ''
+            e.add_field(name=f'{i+1}. {p["name"]}{mark}',value=f'Floor **{p["floor"]}** • {p["losses"]} defeats • {p["spent"]} attempts',inline=False)
+    e.set_image(url='attachment://dungeon-panel.png')
+    await ui_reply(interaction,embed=e,file=panel_file('leaderboard'),ephemeral=True)
 
 # Administrator-only reset. Explicit confirmation, DB backup and complete competition wipe.
 RESET_TABLES = (
     'battles', 'dungeon_encounters', 'elite_trials', 'merchant_purchases',
     'raid_participation', 'world_raids', 'daily_missions', 'daily_bonuses',
     'equipment_inventory', 'loot_rolls', 'crafted_equipment', 'daily_bounties',
-    'dungeon_skills', 'dungeon_companions', 'players'
+    'dungeon_skills', 'dungeon_companions', 'arena_runs', 'players'
 )
 
 class ConfirmCompetitionReset(discord.ui.View):
@@ -1215,114 +1258,6 @@ async def reset(interaction: discord.Interaction):
         'A SQLite backup will be created first. The event start date will **not** change.\n'
         'Confirm within 90 seconds or cancel.',
         view=ConfirmCompetitionReset(interaction.user.id), ephemeral=True)
-
-# Test laboratory is available ONLY on an explicitly enabled, isolated test bot.
-TEST_FIELDS = {
-    'floor': (0, 500), 'gold': (0, 10000000), 'materials': (0, 100000),
-    'weapon_tier': (1, 10), 'armor_tier': (1, 10),
-    'weapon_upgrade': (0, 10), 'armor_upgrade': (0, 10),
-    'weapon_advanced': (0, 5), 'armor_advanced': (0, 5),
-    'weapon_cores': (0, 100), 'armor_cores': (0, 100),
-    'stamina': (0, STAMINA_CAP), 'points': (0, 500),
-}
-
-class TestEditModal(discord.ui.Modal, title='Dungeon Test — Edit Fighter'):
-    field = discord.ui.TextInput(label='Stat name', placeholder='floor / gold / weapon_tier / ...', max_length=30)
-    value = discord.ui.TextInput(label='New value', placeholder='50', max_length=10)
-
-    async def on_submit(self, interaction: discord.Interaction):
-        if not TEST_MODE or not interaction.guild or not interaction.user.guild_permissions.administrator:
-            return await interaction.response.send_message('Test administrator access required.', ephemeral=True)
-        field = str(self.field).strip().lower()
-        try: value = int(str(self.value).strip())
-        except ValueError: return await interaction.response.send_message('Enter a whole number.', ephemeral=True)
-        if field not in TEST_FIELDS:
-            return await interaction.response.send_message('Allowed: ' + ', '.join(TEST_FIELDS), ephemeral=True)
-        lo, hi = TEST_FIELDS[field]
-        if not lo <= value <= hi:
-            return await interaction.response.send_message(f'{field} must be between {lo} and {hi}.', ephemeral=True)
-        async with lock:
-            if not get_player(interaction.user.id):
-                return await interaction.response.send_message('Create a fighter using /play first.', ephemeral=True)
-            conn.execute(f'UPDATE players SET {field}=? WHERE user_id=?', (value, interaction.user.id))
-            # Always restart the next battle with the edited statistics.
-            conn.execute('DELETE FROM battles WHERE user_id=?', (interaction.user.id,))
-            conn.commit()
-        await interaction.response.send_message(f'🧪 Updated **{field}** to **{value}**. Active battle cleared. Use /play to test.', ephemeral=True)
-
-class TestLabView(discord.ui.View):
-    def __init__(self, uid):
-        super().__init__(timeout=300)
-        self.uid=uid
-
-    async def interaction_check(self, interaction):
-        if not TEST_MODE or interaction.user.id != self.uid or not interaction.user.guild_permissions.administrator:
-            await interaction.response.send_message('This private test panel belongs to its administrator.', ephemeral=True)
-            return False
-        return True
-
-    @discord.ui.button(label='Edit Stats / Floor', emoji='🛠️', style=discord.ButtonStyle.primary)
-    async def edit(self, interaction, button):
-        await interaction.response.send_modal(TestEditModal())
-
-    @discord.ui.button(label='Max Out Fighter', emoji='⚔️', style=discord.ButtonStyle.success)
-    async def max_fighter(self, interaction, button):
-        async with lock:
-            if not get_player(self.uid):
-                return await interaction.response.send_message('Create a fighter using /play first.', ephemeral=True)
-            conn.execute("""UPDATE players SET gold=1000000, materials=10000, points=250,
-                weapon_upgrade=10, armor_upgrade=10, weapon_advanced=5, armor_advanced=5,
-                weapon_tier=10, armor_tier=10, weapon_cores=30, armor_cores=30,
-                stamina=? WHERE user_id=?""", (STAMINA_CAP, self.uid))
-            conn.execute('DELETE FROM battles WHERE user_id=?', (self.uid,))
-            conn.commit()
-        await interaction.response.send_message('🧪 Maxed equipment and resources. Choose a floor with Edit Stats / Floor.', ephemeral=True)
-
-    @discord.ui.button(label='Unlock Companions & Skills', emoji='🐾', style=discord.ButtonStyle.secondary)
-    async def unlock(self, interaction, button):
-        async with lock:
-            if not get_player(self.uid):
-                return await interaction.response.send_message('Create a fighter using /play first.', ephemeral=True)
-            for companion in COMPANIONS:
-                conn.execute('INSERT INTO dungeon_companions(user_id,companion,level) VALUES(?,?,3) ON CONFLICT(user_id,companion) DO UPDATE SET level=3', (self.uid,companion))
-            for branch, (_, _, cap) in SKILL_BRANCHES.items():
-                conn.execute('INSERT INTO dungeon_skills(user_id,branch,level) VALUES(?,?,?) ON CONFLICT(user_id,branch) DO UPDATE SET level=excluded.level', (self.uid,branch,cap))
-            conn.execute('UPDATE players SET active_companion=?,floor=MAX(floor,180) WHERE user_id=?', (next(iter(COMPANIONS)),self.uid))
-            conn.execute('DELETE FROM battles WHERE user_id=?', (self.uid,))
-            conn.commit()
-        await interaction.response.send_message('🧪 All skills and companions unlocked at max level. Floor raised to at least 180; edit it to test a lower floor.', ephemeral=True)
-
-    @discord.ui.button(label='Clear Current Battle', emoji='🔄', style=discord.ButtonStyle.secondary)
-    async def clear_battle(self, interaction, button):
-        async with lock:
-            conn.execute('DELETE FROM battles WHERE user_id=?', (self.uid,))
-            conn.commit()
-        await interaction.response.send_message('🧪 Current battle cleared. Enter the dungeon again.', ephemeral=True)
-
-    @discord.ui.button(label='Reset My Test Fighter', emoji='🗑️', style=discord.ButtonStyle.danger)
-    async def reset_me(self, interaction, button):
-        async with lock:
-            # Remove only the invoking tester, never any other account.
-            for table in RESET_TABLES:
-                if table in ('world_raids',): continue
-                cols={row[1] for row in conn.execute(f'PRAGMA table_info({table})')}
-                if 'user_id' in cols: conn.execute(f'DELETE FROM {table} WHERE user_id=?', (self.uid,))
-            conn.commit()
-        await interaction.response.send_message('🧪 Your test fighter has been removed. Recreate it using /play.', ephemeral=True)
-
-if TEST_MODE:
-    @bot.tree.command(name='test', description='ADMIN ONLY: open isolated Dungeon Kombat test controls')
-    @app_commands.default_permissions(administrator=True)
-    @app_commands.guild_only()
-    async def test(interaction: discord.Interaction):
-        if not interaction.guild or not interaction.user.guild_permissions.administrator:
-            return await interaction.response.send_message('Administrator only.', ephemeral=True)
-        await interaction.response.send_message(
-            '🧪 **Dungeon Kombat v28 — Test Laboratory**\n'
-            'This is an isolated test database; live competition data is untouched.\n'
-            'Create your fighter with /play, then edit floors, resources and upgrades here.\n'
-            'Allowed fields: ' + ', '.join(TEST_FIELDS),
-            view=TestLabView(interaction.user.id), ephemeral=True)
 
 @bot.tree.command(name='event',description='View the tournament dates and rules')
 async def event(interaction: discord.Interaction):
@@ -1545,7 +1480,7 @@ class RegistrationGate(discord.ui.View):
 
 GUIDE_PAGES=(
  ('Welcome & Tournament Rules',
-  '**Objective:** Climb as high as possible during seven days. There is no final floor and no Championship Arena. The three highest completed floors win.\n\n'
+  '**Objective:** Clear up to Floor 150 during the seven-day dungeon stage. The Championship Arena opens on days 8–9 for players who clear Floor 150.\n\n'
   '**Getting started:** Create a fighter, enter the dungeon, upgrade gear, gather resources and choose a permanent build after Floor 5.\n\n'
   '**Tie-breakers:** Fewer defeats, then fewer attempts, then fewer total combat turns. Progress saves automatically. Event begins '+START_DATE+' UTC.'),
  ('Dungeon Combat & Unlimited Attempts',
@@ -1553,15 +1488,15 @@ GUIDE_PAGES=(
   '⚔️ **Attack:** Damage and energy recovery.\n🛡️ **Defend:** Reduces incoming damage.\n🔥 **Special:** Weapon-based attack using energy and cooldown.\n💚 **Heal:** Three potions per battle.\n⚡ **Focus:** Recover energy and empower your next strike.\n\n'
   'Watch enemy intentions. Bosses appear every ten floors, have multiple phases and become tougher beyond Floor 100.'),
  ('Builds, Weapons & Armour',
-  '**Choose one permanent build at Floor 5:**\n⚔️ Berserker: +15% attack, +21% HP.\n🛡️ Guardian: +12% defence, +10% HP, +2% attack.\n🔮 Arcanist: +20 energy, +5% attack and HP.\n\n'
+  '**Choose one permanent build at Floor 5:**\n⚔️ Berserker: +15% attack, +16% HP.\n🛡️ Guardian: +22% defence, +20% HP, +9% attack.\n🔮 Arcanist: +20 energy, +20% attack, +10% HP.\n\n'
   'Each floor grants three stat points. Earn one skill-tree point every 15 floors, and recruit companions from the Companion Stable. Only one companion is active at a time.\n'
   'Blacksmith upgrades stop at +10 basic and +5 advanced. Weapon classes: Sword, Axe, Daggers, Staff and Spear.'),
  ('Loot, Crafting & Royal Bounties',
   '🎁 **Milestones:** Guaranteed equipment at certain floors.\n💎 **Loot:** 22% chance per first clear; Common through Legendary.\n🔨 **Crafting:** Eight recipes consume gold and materials; owned items cannot be crafted repeatedly.\n🎯 **Royal Bounties:** Up to three daily tactical challenges; win an unowned collectible.\n\n'
   'Gather with stamina, complete three daily missions and claim the completion bonus. No failed-floor reward farming.'),
- ('Endless Rankings & Strategy',
-  '**Rankings:** Highest completed floor after seven days wins. Second and third place are the next highest floors. Ties: fewer defeats, fewer attempts, fewer turns.\n\n'
-  '**Tips:** Upgrade before boss floors, read attack telegraphs, choose equipment for your build, and collect mission rewards. After Floor 100, difficulty scales faster than equipment.\n\n'
+ ('Tournament Rankings & Strategy',
+  '**Rankings:** Clear Floor 150 to enter the Arena on days 8–9. Five challenges of four tactical rounds award up to 500 points. Highest Arena score wins; dungeon results break ties.\n\n'
+  '**Tips:** Upgrade before boss floors, read attack telegraphs, choose equipment for your build, and collect mission rewards. After Floor 100, bosses demand stronger equipment and smart defence.\n\n'
   'All menus are private to the player; the public entrance remains shared.'),
 )
 
@@ -1643,9 +1578,9 @@ class ActionSelect(discord.ui.Select):
             return await customize.callback(interaction)
 
 BUILD_DESCRIPTIONS={
-    'Berserker':'⚔️ Aggressive fighter — **+15% attack and +21% HP**. Strong damage with enough survivability for bosses.',
-    'Guardian':'🛡️ Defensive fighter — **+12% defence, +10% HP and +2% attack**. Focuses on surviving tough encounters.',
-    'Arcanist':'🔮 Balanced magic fighter — **+20 energy, +5% attack and +5% HP**. More ability flexibility.',
+    'Berserker':'⚔️ Aggressive fighter — **+15% attack and +16% HP**. Strong damage with enough survivability for bosses.',
+    'Guardian':'🛡️ Defensive fighter — **+22% defence, +20% HP and +9% attack**. Focuses on surviving tough encounters.',
+    'Arcanist':'🔮 Balanced magic fighter — **+20 energy, +20% attack and +10% HP**. More ability flexibility.',
 }
 
 class ConfirmBuild(discord.ui.View):
@@ -1690,10 +1625,10 @@ class ActionsView(OwnedView):
         self.kind=kind
         configs={
             'stats':('Spend attribute points',[(x.title(),x,'Improve '+x.title()) for x in STAT_NAMES]),
-            'activity':('Choose resource expedition', [('Ancient Ruins','ruins','110 gold + 2 materials'),('Gold Mine','mine','80 gold'),('Crystal Cavern','crystal','2 materials')]),
+            'activity':('Choose resource expedition', [('Ancient Ruins','ruins','105 gold + 2 materials'),('Gold Mine','mine','220 gold'),('Crystal Cavern','crystal','4 materials')]),
             'skill':('Choose permanent specialization',[('Berserker','Berserker','Attack-focused fighter'),('Guardian','Guardian','Defence-focused fighter'),('Arcanist','Arcanist','Energy-focused fighter')]),
             'enchant':('Choose enchantment',[('Flame','Flame','+3.5% attack'),('Ward','Ward','+4.5% HP')]),
-            'advance':('Choose advanced forging',[('Weapon','weapon','Requires +10 weapon and Floor 50'),('Armour','armor','Requires +10 armour and Floor 50')]),
+            'advance':('Choose advanced forging',[('Weapon','weapon','Requires +10 weapon and Floor 40'),('Armour','armor','Requires +10 armour and Floor 40')]),
             'upgrade':('Choose basic upgrade',[('Weapon','weapon','Up to +10'),('Armour','armor','Up to +10')]),
         }
         label,options=configs[kind]
@@ -1735,7 +1670,7 @@ class TierForgeConfirm(OwnedView):
             field='weapon_tier' if self.kind=='weapon' else 'armor_tier'
             core='weapon_cores' if self.kind=='weapon' else 'armor_cores'
             nxt=p[field]+1
-            if nxt>10:return await ui_reply(i,'Already at Tier 10.',ephemeral=True)
+            if nxt>8:return await ui_reply(i,'Tier 8 is the maximum available in the dungeon.',ephemeral=True)
             if p['floor']<(nxt-1)*20:return await ui_reply(i,f'Clear Floor {(nxt-1)*20} first.',ephemeral=True)
             gold,mats=TIER_GOLD[nxt-1],TIER_MATERIALS[nxt-1]
             if p[core]<1 or p['gold']<gold or p['materials']<mats:
@@ -1753,7 +1688,7 @@ class TierForgeMenu(OwnedView):
         p=get_player(self.uid)
         if not p or get_battle(self.uid):return await ui_reply(i,'Finish your battle first.',ephemeral=True)
         nxt=p['weapon_tier' if kind=='weapon' else 'armor_tier']+1
-        if nxt>10:return await ui_reply(i,'Tier 10 is the maximum tier.',ephemeral=True)
+        if nxt>8:return await ui_reply(i,'Tier 8 is the maximum dungeon tier; higher tiers are reserved for future content.',ephemeral=True)
         gold,mats=TIER_GOLD[nxt-1],TIER_MATERIALS[nxt-1]
         cores=p['weapon_cores' if kind=='weapon' else 'armor_cores']
         await ui_reply(i,f'⚒️ **{TIER_NAMES[nxt-1]} {p["weapon"] if kind=="weapon" else "Armour"} — Tier {nxt}**\nRequires Floor {(nxt-1)*20} completed.\nCost: {gold:,} gold, {mats} materials, 1 {kind} core.\nYour wallet: {p["gold"]:,} gold, {p["materials"]} materials, {cores} cores.\nTier bonuses replace previous tier bonuses; existing + upgrades are preserved.',view=TierForgeConfirm(self.uid,kind),ephemeral=True)
@@ -1786,7 +1721,7 @@ async def open_actions(i,kind):
         'activity':'Spend one stamina to earn the selected rewards.',
         'skill':'Choose one permanent build after Floor 5.\n\n'+ '\n'.join(BUILD_DESCRIPTIONS.values()),
         'enchant':'Enchantment unlocks after Floor 30 and costs 4,000 gold and 25 materials.',
-        'advance':'Advanced forging unlocks at Floor 50 after reaching +10.',
+        'advance':'Advanced forging unlocks at Floor 40 after reaching +10.',
         'upgrade':'Improve equipment using gold and materials.',
     }
     await ui_reply(i, embed=discord.Embed(title='📜 '+kind.title(),description=descriptions[kind],color=discord.Color.from_rgb(124,89,50)),view=ActionsView(i.user.id,kind),ephemeral=True)
@@ -2103,18 +2038,20 @@ class KingdomMenu(OwnedView):
     async def back(self,i,b):await open_castle(i)
 
 class PlayMenu(OwnedView):
-    """Four core destinations, Arena appears only after Floor 100."""
+    """Dungeon menu; Championship Arena will be introduced separately."""
     def __init__(self,uid):
         super().__init__(uid)
         player=get_player(uid)
         if player and player['floor']>=5 and player['skill']=='None':self.add_item(ChooseBuildButton())
-        # No Arena: rankings depend only on endless dungeon progress.
+        # Championship Arena will be added in a subsequent update.
     @discord.ui.button(label='Enter Dungeon',emoji='⚔️',style=discord.ButtonStyle.primary,row=0)
     async def enter(self,i,b):await dungeon.callback(i)
     @discord.ui.button(label='My Fighter',emoji='🛡️',style=discord.ButtonStyle.secondary,row=0)
     async def hero(self,i,b):await ui_reply(i,embed=discord.Embed(title='🛡️ Fighter Hall',description='Manage your character, stats, equipment and appearance.',color=discord.Color.from_rgb(124,89,50)),view=FighterMenu(self.uid),ephemeral=True)
     @discord.ui.button(label='Kingdom',emoji='🏰',style=discord.ButtonStyle.secondary,row=1)
     async def kingdom(self,i,b):await ui_reply(i,embed=discord.Embed(title='🏰 Explore the Kingdom',description='Blacksmith, Activities, Daily Missions, Kingdom Events, Royal Bounties, Merchant, Treasury and Rankings.',color=discord.Color.from_rgb(124,89,50)),view=KingdomMenu(self.uid),ephemeral=True)
+    @discord.ui.button(label='Championship Arena',emoji='🏆',style=discord.ButtonStyle.success,row=2)
+    async def championship(self,i,b):await bot.tree.get_command('arena').callback(i)
     @discord.ui.button(label='Rules & Guide',emoji='📜',style=discord.ButtonStyle.secondary,row=1)
     async def rules(self,i,b):await show_guide(i,0)
 
@@ -2122,10 +2059,12 @@ class PlayMenu(OwnedView):
 async def play(interaction:discord.Interaction):
     await interaction.response.send_message(embed=castle_embed('THE KINGDOM ENTRANCE', 'All adventurers can use the button below. Your character and menus open privately, so players never control each other’s progress.'),file=panel_file('event'),view=KingdomEntrance())
 
+arena_api = championship_arena.install(bot, conn, lock, get_player, event_day)
+
 # Public /play and /leaderboard, plus admin-only /reset. Other handlers remain
 # callable by the UI, with no Championship Arena.
 for _cmd in list(bot.tree.get_commands()):
-    if _cmd.name not in (('play', 'leaderboard', 'reset', 'test') if TEST_MODE else ('play', 'leaderboard', 'reset')): bot.tree.remove_command(_cmd.name)
+    if _cmd.name not in ('play', 'leaderboard', 'reset', 'arena', 'arena-score'): bot.tree.remove_command(_cmd.name)
 
 @bot.event
 async def on_ready():
