@@ -2064,7 +2064,13 @@ class PlayMenu(OwnedView):
 async def play(interaction:discord.Interaction):
     await interaction.response.send_message(embed=castle_embed('THE KINGDOM ENTRANCE', 'All adventurers can use the button below. Your character and menus open privately, so players never control each other’s progress.'),file=panel_file('event'),view=KingdomEntrance())
 
-arena_api = championship_arena.install(bot, conn, lock, get_player, event_day)
+# Compatible with Arena modules that require the castle callback and older ones.
+import inspect
+_arena_install_parameters = inspect.signature(championship_arena.install).parameters
+if 'open_castle' in _arena_install_parameters:
+    arena_api = championship_arena.install(bot, conn, lock, get_player, event_day, open_castle)
+else:
+    arena_api = championship_arena.install(bot, conn, lock, get_player, event_day)
 
 # Public /play and /leaderboard, plus admin-only /reset. Other handlers remain
 # callable by the UI, with no Championship Arena.
