@@ -436,6 +436,11 @@ def stats(p):
     defense=round(defense*(1+ARMOUR_DEF_BONUS[min(10,p['armor_tier'])-1]))
     return hp,atk,defense,speed,energy
 
+def is_challenge_floor(floor):
+    """Three fixed harder normal encounters per decade, from floor 21."""
+    return 21 <= floor <= 149 and floor % 10 in (3, 6, 9)
+
+
 def enemy_stats(floor):
     """Endless scaling: a reachable first 100, then increasingly steep walls.
 
@@ -504,6 +509,11 @@ def enemy_stats(floor):
         hp *= 1.0 + approach_bonus
         attack *= 1.0 + atk_bonus
         defense *= 1.0 + def_bonus
+    # v48: Existing monsters only: stronger stats on three normal floors per decade.
+    if is_challenge_floor(floor):
+        hp *= 1.40
+        attack *= 1.20
+        defense *= 1.10
     return round(hp),round(attack),round(defense),boss
 
 def reward_for_floor(floor):
@@ -516,6 +526,10 @@ def reward_for_floor(floor):
     if floor % 10 == 0:
         gold += round((350 + 60*band)*.50)
         mats += max(1,round((8 + band)*.50))
+    # Small first-clear bonus; no repeatable farming reward.
+    if is_challenge_floor(floor):
+        gold = round(gold * 1.20)
+        mats = round(mats * 1.20)
     return gold, mats
 
 # Strong but non-absolute equipment preparation penalty: undergeared bosses gain HP.
