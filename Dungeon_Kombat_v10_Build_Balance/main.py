@@ -2188,7 +2188,7 @@ else:
 # Public /play and /leaderboard, plus admin-only /reset. Other handlers remain
 # callable by the UI, with no Championship Arena.
 for _cmd in list(bot.tree.get_commands()):
-    if _cmd.name not in ('play', 'leaderboard', 'reset', 'arena', 'arena-score', 'expedition'): bot.tree.remove_command(_cmd.name)
+    if _cmd.name not in ('play', 'leaderboard', 'reset', 'arena', 'arena-score', 'expedition', 'givegold'): bot.tree.remove_command(_cmd.name)
 
 @bot.event
 async def on_ready():
