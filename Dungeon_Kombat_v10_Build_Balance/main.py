@@ -5,6 +5,8 @@ import json
 import itertools
 import os
 import random
+import logging
+import traceback
 import sqlite3
 import time
 from pathlib import Path
@@ -23,6 +25,7 @@ REGEN_HP = 10
 RUNE_REVEAL_SECONDS = 3
 RUNE_ANSWER_SECONDS = 15  # legacy default; actual duration scales with floor
 AUTO_HIDE_TASKS = {}
+PLAYER_LOCKS = {}
 QUESTIONS = [
  ('Which planet is known as the Red Planet?', 'Mars', ['Venus','Jupiter','Mercury']),
  ('Which element has the chemical symbol Fe?', 'Iron', ['Copper','Silver','Gold']),
@@ -293,7 +296,7 @@ def regen(uid):
     if steps:
         hp=min(MAX_HP,p['hp']+steps*(REGEN_HP+p['regen_upgrade']*2))
         conn.execute('UPDATE players SET hp=?,hp_tick=? WHERE uid=?',(hp,p['hp_tick']+steps*REGEN_SECONDS,uid))
-    if p['hp']==MAX_HP:
+    if p['hp']==MAX_HP or (steps and hp==MAX_HP):
         conn.execute('UPDATE players SET hp_tick=? WHERE uid=?',(now(),uid))
 
 def change(uid,**fields):
@@ -445,6 +448,8 @@ def make_challenge(uid,mode,level=1):
         reveal=4
         payload={'sequence':seq,'progress':0,'reveal_until':now()+reveal}
         duration=reveal+(30 if level<=10 else 35 if level<=30 else 40)
+    payload['_duration']=duration
+    payload['_timer_started']=False
     conn.execute('INSERT OR REPLACE INTO sessions(uid,mode,kind,payload,deadline,started) VALUES(?,?,?,?,?,?)',
                  (uid,mode,kind,json.dumps(payload),now()+duration,now()))
     return kind
@@ -522,9 +527,25 @@ class UI(discord.ui.View):
         async def cb(interaction):
             if interaction.user.id!=self.uid:
                 await interaction.response.send_message('This panel belongs to another player. Use `/play`.',ephemeral=True);return
-            # Acknowledge the button immediately, before database and challenge work.
-            await interaction.response.defer()
-            await route(interaction,self.uid,action,self.day)
+            # Acknowledge immediately; all subsequent updates edit this component message.
+            try:
+                await interaction.response.defer(thinking=False)
+            except discord.HTTPException:
+                logging.exception('Failed to acknowledge button %s', action)
+                return
+            lock=PLAYER_LOCKS.setdefault(self.uid, asyncio.Lock())
+            try:
+                async with lock:
+                    # Ignore stale panels after another interaction changed the challenge.
+                    await route(interaction,self.uid,action,self.day)
+            except Exception:
+                logging.exception('Button failed: user=%s action=%s',self.uid,action)
+                try:
+                    await interaction.followup.send(
+                        '⚠️ This button encountered an error. Please use `/play` to reopen your panel. '
+                        'Your saved progress has not been reset.',ephemeral=True)
+                except discord.HTTPException:
+                    logging.exception('Could not send error notice')
         b.callback=cb;self.add_item(b)
     def build(self):
         p=player(self.uid)
@@ -807,7 +828,7 @@ def bank_exp(uid,loot,day,prefix='🏦 Treasure banked!'):
 async def route(interaction,uid,action,day=None):
     player(uid,interaction.user.display_name)
     s=session(uid)
-    if s and now()>s['deadline']:
+    if s and json.loads(s['payload']).get('_timer_started', True) and now()>s['deadline']:
         mode=s['mode'];kind=s['kind']
         page,msg=await complete(uid,False,mode,kind,'Time expired.')
         if action.startswith(('answer_','rotate_','path_')) or action in ('unlock','hide','forfeit'):
@@ -964,7 +985,18 @@ async def play(interaction:discord.Interaction):
             data['hidden']=True
             conn.execute('UPDATE sessions SET payload=? WHERE uid=?',(json.dumps(data),uid))
         await interaction.response.send_message(embed=challenge_embed(uid),view=UI(uid,'challenge'),ephemeral=True)
+        if not data.get('_timer_started', True):
+            started_at=now()
+            data['_timer_started']=True
+            if s['kind'] in ('memory','path'):
+                reveal_length=(5 if len(data['sequence'].split())==5 else 6) if s['kind']=='memory' else 4
+                data['reveal_until']=started_at+reveal_length
+            conn.execute('UPDATE sessions SET payload=?,deadline=? WHERE uid=?',
+                         (json.dumps(data),started_at+data['_duration'],uid))
+            await interaction.edit_original_response(embed=challenge_embed(uid),view=UI(uid,'challenge'))
+            s=session(uid)
         # On restart, /play provides a fresh panel and resumes pending reveals.
+        data=json.loads(s['payload'])
         if s['kind'] in ('memory','path') and now()<data.get('reveal_until',0):
             old=AUTO_HIDE_TASKS.pop(uid,None)
             if old:old.cancel()
