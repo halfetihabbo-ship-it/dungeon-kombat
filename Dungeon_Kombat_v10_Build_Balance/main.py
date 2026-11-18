@@ -1358,6 +1358,23 @@ async def reset(interaction: discord.Interaction):
         'Confirm within 90 seconds or cancel.',
         view=ConfirmCompetitionReset(interaction.user.id), ephemeral=True)
 
+@bot.tree.command(name='givegold', description='TESTING: Give gold to a registered fighter')
+@app_commands.describe(player='Discord member receiving gold', amount='Amount of gold to award (positive integer)')
+@app_commands.guild_only()
+async def givegold(interaction: discord.Interaction, player: discord.Member, amount: int):
+    if amount < 1 or amount > 1_000_000:
+        return await interaction.response.send_message('Enter an amount between 1 and 1,000,000 gold.', ephemeral=True)
+    async with lock:
+        p = get_player(player.id)
+        if p is None:
+            return await interaction.response.send_message('That member has not created a Dungeon Kombat fighter yet.', ephemeral=True)
+        conn.execute('UPDATE players SET gold = gold + ? WHERE user_id = ?', (amount, player.id))
+        conn.commit()
+        balance = get_player(player.id)['gold']
+    await interaction.response.send_message(
+        f'✅ Awarded **{amount:,} gold** to {player.mention}. New balance: **{balance:,} gold**.',
+        ephemeral=True)
+
 @bot.tree.command(name='event',description='View the tournament dates and rules')
 async def event(interaction: discord.Interaction):
     e=discord.Embed(title='🏰 Dungeon Kombat: The Endless Dungeon',description=f'**Start (UTC):** {START_DATE}\n**Duration:** 7 days\n**Status:** {event_state().title()}\n**Current day:** {event_day()}\n**Goal:** Reach the highest completed floor. Top three win.',color=discord.Color.orange())
