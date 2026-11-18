@@ -2,6 +2,7 @@
 import asyncio
 import datetime as dt
 import json
+import itertools
 import os
 import random
 import sqlite3
