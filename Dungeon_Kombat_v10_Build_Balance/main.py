@@ -366,7 +366,7 @@ def generate_lock_puzzle(level, royal=False):
         clues=('Set **3 different symbols** using the clues below. Each dial has '+str(pool)+' possible symbols.\n\n'
                +'\n'.join(f'**{i+1}.** {label}' for i,(label,_) in enumerate(chosen))
                +'\n\n**Symbols:** '+legend)
-        duration={'easy':30,'medium':45,'hard':60,'expert':75}[difficulty]
+        duration={'easy':45,'medium':60,'hard':75,'expert':90}[difficulty]
         return {'goal':list(goal),'current':current,'symbols':glyphs[:pool],
                 'clues':clues,'difficulty':difficulty},duration
     raise RuntimeError('Could not generate a unique lock puzzle')
@@ -388,7 +388,7 @@ def make_challenge(uid,mode,level=1):
         payload={'question':q,'options':choices,'answer':choices.index(answer),'qid':idx}
         hist.append(idx)
         change(uid,question_history=json.dumps(hist[-500:]))
-        duration=10
+        duration=15
     elif kind=='pattern':
         difficulty=1 if level<=10 else 2 if level<=30 else 3
         pattern_type=random.choice(['add','multiply','squares','alternate'] if difficulty==1 else ['multiply','squares','alternate','difference','fibonacci'])
@@ -420,12 +420,12 @@ def make_challenge(uid,mode,level=1):
         choices=list(opts);random.shuffle(choices)
         payload={'question':'Complete the sequence: '+', '.join(map(str,sequence[:-1]))+', ?',
                  'options':list(map(str,choices)),'answer':choices.index(answer),'pattern_type':pattern_type}
-        duration=20 if difficulty==1 else 25 if difficulty==2 else 35
+        duration=25 if difficulty==1 else 30 if difficulty==2 else 40
     elif kind=='memory':
         runes=['☀','☾','◆','✦','♜','♠','♣','⬟']
         count=5 if level<=10 else 6 if level<=30 else 7
         reveal=4 if count==4 else 5 if count==5 else 6
-        answer_seconds=15 if count==4 else 20 if count==5 else 25
+        answer_seconds=25 if count<=5 else 30 if count==6 else 35
         seq=random.sample(runes,count)
         options=[' '.join(seq)]
         while len(options)<4:
@@ -444,7 +444,7 @@ def make_challenge(uid,mode,level=1):
         seq=[random.choice(dirs) for _ in range(count)]
         reveal=4
         payload={'sequence':seq,'progress':0,'reveal_until':now()+reveal}
-        duration=reveal+(25 if level<=10 else 30 if level<=30 else 35)
+        duration=reveal+(30 if level<=10 else 35 if level<=30 else 40)
     conn.execute('INSERT OR REPLACE INTO sessions(uid,mode,kind,payload,deadline,started) VALUES(?,?,?,?,?,?)',
                  (uid,mode,kind,json.dumps(payload),now()+duration,now()))
     return kind
@@ -470,7 +470,7 @@ def base_embed(uid,title='🏰 THE GOLDEN VAULT',description=''):
 RULES='''**🏆 Objective:** Highest Vault Score after seven days wins. Ties: highest floor, then best accuracy.
 **🏰 Dungeon:** 50 floors; 2–4 randomly generated challenges per floor. Guardian at every 10th floor. Progress is permanent.
 **❤️ Health:** Start with 100 HP; wrong answers and timeouts cost 10 HP. Recover 10 HP every five minutes, including offline. Healing potions restore 25 HP.
-**⏱️ Timers:** Trivia 10s; patterns 15–30s; memory 3–5s automatic reveal + 12–20s answer; deduction locks 30–75s; paths 4s automatic reveal + 25s input.
+**⏱️ Timers:** Trivia 15s; patterns 25–40s; memory 5–6s automatic reveal + 25–35s answer; deduction locks 45–90s; paths 4s automatic reveal + 30–40s input.
 **🗝️ Treasure:** Dungeon keys are randomised and improve with floor progression. Treasury key rarity improves across five tiers; successful chambers have a 40% key chance and full runs guarantee a key. Forge five lower-tier keys into one higher-tier key. Ancient chests award 900 score. Earn keys and gold, open chests and build Vault Score. Chests have fixed score values by tier; no random score jackpots.
 **🧭 Expeditions:** Repeatable 3–5-room expeditions. You may bank loot by leaving; if you collapse, lose half the unbanked gold. First three completed expeditions each day award bonus score.
 **📅 Daily activities:** Five tasks and one guardian per event day; missed event days can be completed later before the event ends. Royal Treasury unlocks after completing Floor 50 and offers unlimited runs.
@@ -486,7 +486,7 @@ Earn the most **Vault Score** during the seven-day event. Open **Leaderboard** t
 Open **Dungeon** and start the next floor challenge. Clear 2–4 random challenges per floor. Every 10th floor has a guardian. Completed floors are saved permanently. Finish Floor 50 to unlock **Royal Treasury**.
 
 **🧩 Questions and puzzles**
-General-knowledge questions have **10 seconds** to answer. Number patterns have **15–30 seconds**. Rune Memory reveals a sequence for **3–5 seconds**, hides it automatically, then gives **12–20 seconds** to reproduce it. Hidden Path hides automatically after **4 seconds**, then gives **25 seconds** for input. Deduction lockpicking has **30 seconds (easy), 45 seconds (medium), 60 seconds (hard), or 75 seconds (Royal Treasury expert)**. Use the clues to set three different symbols, then press Unlock. Each puzzle is randomly generated and checked to have exactly one solution. Later floors feature harder puzzles. Question choices and puzzle sequences are randomised; recently seen trivia is tracked to reduce repeats. Timers continue even if you close Discord.
+General-knowledge questions have **15 seconds** to answer. Number patterns have **25–40 seconds**. Rune Memory reveals a sequence for **5–6 seconds**, hides it automatically, then gives **25–35 seconds** to reproduce it. Hidden Path hides automatically after **4 seconds**, then gives **30–40 seconds** for input. Deduction lockpicking has **45 seconds (easy), 60 seconds (medium), 75 seconds (hard), or 90 seconds (Royal Treasury expert)**. Use the clues to set three different symbols, then press Unlock. Each puzzle is randomly generated and checked to have exactly one solution. Later floors feature harder puzzles. Question choices and puzzle sequences are randomised; recently seen trivia is tracked to reduce repeats. Timers continue even if you close Discord.
 
 **❤️ Health and recovery**
 You have up to **100 HP**. Wrong answers and timeouts normally cost **10 HP**. Health regenerates by **10 HP every 5 minutes**, including while offline, with workshop upgrades able to improve regeneration. Healing potions restore **25 HP**. At zero HP, wait to recover or use a potion; completed floors are safe.
@@ -687,6 +687,20 @@ async def show(interaction,uid,page='home',note='',day=None):
         await interaction.response.edit_message(embed=e,view=view)
     if page=='challenge':
         current=session(uid)
+        if current:
+            data=json.loads(current['payload'])
+            if not data.get('_timer_started', True):
+                # The challenge panel has been delivered to Discord. Start its clock now.
+                started_at=now()
+                data['_timer_started']=True
+                if current['kind'] in ('memory','path'):
+                    reveal_length=5 if current['kind']=='memory' and len(data['sequence'].split())==5 else 6 if current['kind']=='memory' else 4
+                    data['reveal_until']=started_at+reveal_length
+                conn.execute('UPDATE sessions SET payload=?,deadline=? WHERE uid=?',
+                             (json.dumps(data),started_at+data['_duration'],uid))
+                # Refresh the timestamp on the visible challenge panel.
+                await interaction.edit_original_response(embed=challenge_embed(uid),view=UI(uid,'challenge'))
+                current=session(uid)
         if current and current['kind'] in ('memory','path'):
             payload=json.loads(current['payload'])
             if not payload.get('hidden') and now()<payload.get('reveal_until',0):
