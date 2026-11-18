@@ -260,6 +260,65 @@ def steps_required(floor_num):
     if floor_num<=25:return 3
     return 4
 
+
+def generate_lock_puzzle(level, royal=False):
+    """Generate a deduction lock with exactly one valid combination."""
+    names=['Sun','Moon','Gem','Star','Crown']
+    glyphs=['☀','☾','◆','✦','♛']
+    expert=royal or level>50
+    pool=5 if expert else 4
+    difficulty='easy' if level<=15 and not expert else 'medium' if level<=35 and not expert else 'expert' if expert else 'hard'
+    # All three symbols must differ; that is part of the player-facing instructions.
+    universe=list(itertools.permutations(range(pool),3))
+    for _ in range(100):
+        goal=random.choice(universe)
+        predicates=[]
+        for a in range(pool):
+            predicates.append((f'The {names[a]} is not used.',lambda x,a=a:a not in x))
+            for pos in range(3):
+                predicates.append((f'The {names[a]} is not in dial {pos+1}.',lambda x,a=a,pos=pos:x[pos]!=a))
+                if difficulty=='easy':
+                    predicates.append((f'Dial {pos+1} shows the {names[a]}.',lambda x,a=a,pos=pos:x[pos]==a))
+            for b in range(pool):
+                if a==b:continue
+                predicates.append((f'The {names[a]} is somewhere left of the {names[b]}.',lambda x,a=a,b=b:a in x and b in x and x.index(a)<x.index(b)))
+                predicates.append((f'The {names[a]} is directly beside the {names[b]}.',lambda x,a=a,b=b:a in x and b in x and abs(x.index(a)-x.index(b))==1))
+        random.shuffle(predicates)
+        true_clues=[(label,pred) for label,pred in predicates if pred(goal)]
+        # Prefer deductions over direct assignments beyond the tutorial tier.
+        if difficulty!='easy':true_clues=[v for v in true_clues if not v[0].startswith('Dial ')]
+        candidates=universe[:];chosen=[]
+        while len(candidates)>1 and len(chosen)<8:
+            choices=[]
+            for label,pred in true_clues:
+                if label in [c[0] for c in chosen]:continue
+                filtered=[x for x in candidates if pred(x)]
+                if 0<len(filtered)<len(candidates):choices.append((len(filtered),random.random(),label,pred,filtered))
+            if not choices:break
+            # Choose clues that eliminate possibilities but avoid trivial one-clue solutions.
+            choices.sort(key=lambda z:(z[0],z[1]))
+            best=choices[0]
+            chosen.append((best[2],best[3]));candidates=best[4]
+        if len(candidates)!=1:continue
+        minimum={'easy':3,'medium':4,'hard':5,'expert':5}[difficulty]
+        for label,pred in true_clues:
+            if len(chosen)>=minimum:break
+            if label not in [c[0] for c in chosen]:chosen.append((label,pred))
+        random.shuffle(chosen)
+        # Verify the exact displayed clues uniquely determine the goal.
+        solutions=[x for x in universe if all(pred(x) for _,pred in chosen)]
+        if solutions!=[goal]:continue
+        current=[random.randrange(pool) for _ in range(3)]
+        if current==list(goal):current[0]=(current[0]+1)%pool
+        legend=' · '.join(f'{glyphs[i]} {names[i]}' for i in range(pool))
+        clues=('Set **3 different symbols** using the clues below. Each dial has '+str(pool)+' possible symbols.\n\n'
+               +'\n'.join(f'**{i+1}.** {label}' for i,(label,_) in enumerate(chosen))
+               +'\n\n**Symbols:** '+legend)
+        duration={'easy':30,'medium':45,'hard':60,'expert':75}[difficulty]
+        return {'goal':list(goal),'current':current,'symbols':glyphs[:pool],
+                'clues':clues,'difficulty':difficulty},duration
+    raise RuntimeError('Could not generate a unique lock puzzle')
+
 def make_challenge(uid,mode,level=1):
     # All randomness is server-side. No answers appear in custom IDs.
     kinds=['quiz','quiz','quiz','pattern','pattern','memory','lock','path']
@@ -326,16 +385,7 @@ def make_challenge(uid,mode,level=1):
                  'reveal_until':now()+reveal}
         duration=reveal+answer_seconds
     elif kind=='lock':
-        symbols=['☀','☾','◆','✦']
-        # Clues are generated from the hidden combination, rather than showing it.
-        first=random.randrange(4)
-        gap1=random.choice([1,2,3]);gap2=random.choice([1,2,3])
-        goal=[first,(first+gap1)%4,(first+gap1+gap2)%4]
-        current=[random.randrange(4) for _ in range(3)]
-        if goal==current:current[0]=(current[0]+1)%4
-        payload={'goal':goal,'current':current,'symbols':symbols,'gap1':gap1,'gap2':gap2,
-                 'clues':f'First dial: {symbols[first]}\nSecond dial: {gap1} step(s) clockwise from the first.\nThird dial: {gap2} step(s) clockwise from the second.\nRune order: '+ ' → '.join(symbols)+' → (repeat)'}
-        duration=30 if level<=10 else 35 if level<=30 else 40
+        payload,duration=generate_lock_puzzle(level,royal=mode.startswith('royal:'))
     else:
         dirs=['⬆','⬇','⬅','➡']
         count=5 if level<=10 else 6 if level<=30 else 7
@@ -384,7 +434,7 @@ Earn the most **Vault Score** during the seven-day event. Open **Leaderboard** t
 Open **Dungeon** and start the next floor challenge. Clear 2–4 random challenges per floor. Every 10th floor has a guardian. Completed floors are saved permanently. Finish Floor 50 to unlock **Royal Treasury**.
 
 **🧩 Questions and puzzles**
-General-knowledge questions have **10 seconds** to answer. Number patterns have **15–30 seconds**. Rune Memory reveals a sequence for **3–5 seconds**, hides it automatically, then gives **12–20 seconds** to reproduce it. Hidden Path hides automatically after **4 seconds**, then gives **25 seconds** for input. Clue-based lockpicking gives **25–35 seconds**. Later floors feature harder puzzles. Question choices and puzzle sequences are randomised; recently seen trivia is tracked to reduce repeats. Timers continue even if you close Discord.
+General-knowledge questions have **10 seconds** to answer. Number patterns have **15–30 seconds**. Rune Memory reveals a sequence for **3–5 seconds**, hides it automatically, then gives **12–20 seconds** to reproduce it. Hidden Path hides automatically after **4 seconds**, then gives **25 seconds** for input. Deduction lockpicking has **30 seconds (easy), 45 seconds (medium), 60 seconds (hard), or 75 seconds (Royal Treasury expert)**. Use the clues to set three different symbols, then press Unlock. Each puzzle is randomly generated and checked to have exactly one solution. Later floors feature harder puzzles. Question choices and puzzle sequences are randomised; recently seen trivia is tracked to reduce repeats. Timers continue even if you close Discord.
 
 **❤️ Health and recovery**
 You have up to **100 HP**. Wrong answers and timeouts normally cost **10 HP**. Health regenerates by **10 HP every 5 minutes**, including while offline, with workshop upgrades able to improve regeneration. Healing potions restore **25 HP**. At zero HP, wait to recover or use a potion; completed floors are safe.
@@ -494,7 +544,7 @@ def challenge_embed(uid):
         e.add_field(name='Memorise these runes' if visible else 'Which sequence did you see?',value=data['sequence'] if visible else 'Choose the original rune sequence.',inline=False)
     if kind=='lock':
         syms=data['symbols']
-        e.add_field(name='Combination clues',value=data.get('clues','Match the target: '+ ' '.join(syms[i] for i in data['goal'])),inline=False)
+        e.add_field(name='Deduction clues',value=data.get('clues','Match the target: '+ ' '.join(syms[i] for i in data['goal'])),inline=False)
         e.add_field(name='Your dials',value=' '.join(syms[i] for i in data['current']),inline=False)
     if kind=='path':
         visible=now()<data['reveal_until'] and not data.get('hidden')
@@ -729,7 +779,7 @@ async def route(interaction,uid,action,day=None):
         page,msg=await complete(uid,correct,mode,kind,'Wrong answer.')
         await show(interaction,uid,page,msg,day=int(mode.split(':')[1]) if ':' in mode else day);return
     if kind=='lock' and action.startswith('rotate_'):
-        i=int(action.split('_')[1]);payload['current'][i]=(payload['current'][i]+1)%4
+        i=int(action.split('_')[1]);payload['current'][i]=(payload['current'][i]+1)%len(payload['symbols'])
         conn.execute('UPDATE sessions SET payload=? WHERE uid=?',(json.dumps(payload),uid))
         await show(interaction,uid,'challenge');return
     if kind=='lock' and action=='unlock':
