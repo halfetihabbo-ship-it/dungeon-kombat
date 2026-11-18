@@ -19,6 +19,9 @@ EVENT_DAYS = int(os.getenv('EVENT_DAYS', '7'))
 MAX_HP = 100
 REGEN_SECONDS = 300
 REGEN_HP = 10
+RUNE_REVEAL_SECONDS = 3
+RUNE_ANSWER_SECONDS = 15  # legacy default; actual duration scales with floor
+AUTO_HIDE_TASKS = {}
 QUESTIONS = [
  ('Which planet is known as the Red Planet?', 'Mars', ['Venus','Jupiter','Mercury']),
  ('Which element has the chemical symbol Fe?', 'Iron', ['Copper','Silver','Gold']),
@@ -62,6 +65,127 @@ QUESTIONS = [
  ('What is 9 times 9?', '81', ['72','80','99']),
 ]
 
+
+# Curated factual questions are generated locally; no trivia API or network latency.
+# Numeric questions remain a small minority of the bank.
+def build_question_bank():
+    bank = list(QUESTIONS)
+    capitals = {
+        'France':'Paris','Germany':'Berlin','Italy':'Rome','Spain':'Madrid',
+        'Portugal':'Lisbon','Greece':'Athens','Ireland':'Dublin','Norway':'Oslo',
+        'Sweden':'Stockholm','Finland':'Helsinki','Denmark':'Copenhagen',
+        'Poland':'Warsaw','Austria':'Vienna','Hungary':'Budapest',
+        'Czechia':'Prague','Belgium':'Brussels','Netherlands':'Amsterdam',
+        'Switzerland':'Bern','Iceland':'Reykjavik','Croatia':'Zagreb',
+        'Romania':'Bucharest','Bulgaria':'Sofia','Serbia':'Belgrade',
+        'Ukraine':'Kyiv','Estonia':'Tallinn','Latvia':'Riga',
+        'Lithuania':'Vilnius','Slovakia':'Bratislava','Slovenia':'Ljubljana',
+        'Japan':'Tokyo','China':'Beijing','South Korea':'Seoul',
+        'Thailand':'Bangkok','Vietnam':'Hanoi','Philippines':'Manila',
+        'Indonesia':'Jakarta','Malaysia':'Kuala Lumpur','Singapore':'Singapore',
+        'India':'New Delhi','Pakistan':'Islamabad','Nepal':'Kathmandu',
+        'Bangladesh':'Dhaka','Mongolia':'Ulaanbaatar','Turkey':'Ankara',
+        'Egypt':'Cairo','Morocco':'Rabat','Kenya':'Nairobi',
+        'Ethiopia':'Addis Ababa','Nigeria':'Abuja','Ghana':'Accra',
+        'Senegal':'Dakar','Uganda':'Kampala','Rwanda':'Kigali',
+        'Canada':'Ottawa','United States':'Washington, D.C.',
+        'Mexico':'Mexico City','Cuba':'Havana','Jamaica':'Kingston',
+        'Costa Rica':'San José','Panama':'Panama City',
+        'Colombia':'Bogotá','Peru':'Lima','Chile':'Santiago',
+        'Argentina':'Buenos Aires','Uruguay':'Montevideo',
+        'Paraguay':'Asunción','Ecuador':'Quito','Brazil':'Brasília',
+        'Australia':'Canberra','New Zealand':'Wellington','Fiji':'Suva',
+    }
+    countries=list(capitals)
+    cities=list(capitals.values())
+    rng=random.Random(81462)
+    for country,city in capitals.items():
+        wrong=rng.sample([c for c in cities if c!=city],3)
+        bank.append((f'What is the capital of {country}?',city,wrong))
+        wrong_countries=rng.sample([c for c in countries if c!=country],3)
+        bank.append((f'Which country has {city} as its capital?',country,wrong_countries))
+
+    # Curated subject-specific facts, grouped so incorrect answers are plausible.
+    topics = {
+      'Which scientist is associated with this discovery or theory?': {
+        'Theory of evolution by natural selection':'Charles Darwin',
+        'Theory of general relativity':'Albert Einstein',
+        'Laws of planetary motion':'Johannes Kepler',
+        'Discovery of penicillin':'Alexander Fleming',
+        'Discovery of radioactivity':'Henri Becquerel',
+        'First successful smallpox vaccine':'Edward Jenner',
+        'Discovery of the neutron':'James Chadwick',
+        'Discovery of the electron':'J. J. Thomson',
+        'Heliocentric model of the solar system':'Nicolaus Copernicus',
+        'Periodic table of chemical elements':'Dmitri Mendeleev',
+        'Principle of buoyancy':'Archimedes',
+        'Experiments with pea plant inheritance':'Gregor Mendel',
+        'Research on radium and polonium':'Marie Curie',
+        'Laws of electromagnetic induction':'Michael Faraday',
+        'Early work on computer algorithms':'Ada Lovelace',
+      },
+      'Who wrote this book?': {
+        'Pride and Prejudice':'Jane Austen','1984':'George Orwell',
+        'The Hobbit':'J. R. R. Tolkien','Frankenstein':'Mary Shelley',
+        'Dracula':'Bram Stoker','Jane Eyre':'Charlotte Brontë',
+        'Wuthering Heights':'Emily Brontë','The Great Gatsby':'F. Scott Fitzgerald',
+        'Moby-Dick':'Herman Melville','The Odyssey':'Homer',
+        'The Divine Comedy':'Dante Alighieri','Don Quixote':'Miguel de Cervantes',
+        'The Picture of Dorian Gray':'Oscar Wilde','The Time Machine':'H. G. Wells',
+        'Little Women':'Louisa May Alcott','The Metamorphosis':'Franz Kafka',
+        'The Stranger':'Albert Camus','War and Peace':'Leo Tolstoy',
+        'The Trial':'Franz Kafka','The Handmaid’s Tale':'Margaret Atwood',
+      },
+      'Which artist painted this work?': {
+        'The Starry Night':'Vincent van Gogh','The Persistence of Memory':'Salvador Dalí',
+        'The Scream':'Edvard Munch','Girl with a Pearl Earring':'Johannes Vermeer',
+        'The Birth of Venus':'Sandro Botticelli','Guernica':'Pablo Picasso',
+        'The Night Watch':'Rembrandt','The Kiss':'Gustav Klimt',
+        'American Gothic':'Grant Wood','Water Lilies':'Claude Monet',
+        'The Great Wave off Kanagawa':'Hokusai','The Son of Man':'René Magritte',
+        'A Sunday Afternoon on the Island of La Grande Jatte':'Georges Seurat',
+        'The School of Athens':'Raphael','The Last Supper':'Leonardo da Vinci',
+      },
+      'Which sport uses this term?': {
+        'Birdie':'Golf','Love':'Tennis','Home run':'Baseball',
+        'Scrum':'Rugby','Hat-trick':'Football','Strike':'Bowling',
+        'Checkmate':'Chess','Touchdown':'American football',
+        'Slam dunk':'Basketball','Wicket':'Cricket',
+        'Ippon':'Judo','Knockout':'Boxing',
+      },
+      'Which instrument is associated with this measurement?': {
+        'Atmospheric pressure':'Barometer','Earthquake vibrations':'Seismometer',
+        'Wind speed':'Anemometer','Relative humidity':'Hygrometer',
+        'Temperature':'Thermometer','Electric current':'Ammeter',
+        'Electric voltage':'Voltmeter','Airborne altitude':'Altimeter',
+        'Rainfall':'Rain gauge','Light intensity':'Photometer',
+      },
+      'Which historical civilisation built or is associated with this site?': {
+        'Machu Picchu':'Inca','Chichén Itzá':'Maya',
+        'The Colosseum':'Ancient Rome','The Parthenon':'Ancient Greece',
+        'The Great Pyramid of Giza':'Ancient Egypt','Persepolis':'Achaemenid Persia',
+        'Angkor Wat':'Khmer Empire','The Terracotta Army':'Qin dynasty',
+      },
+    }
+    for template,entries in topics.items():
+        pool=list(dict.fromkeys(entries.values()))
+        for item,answer in entries.items():
+            wrong=rng.sample([v for v in pool if v!=answer],3)
+            bank.append((f'{template} {item}',answer,wrong))
+    # Keep a small, varied set of arithmetic questions instead of thousands of near duplicates.
+    for a,b in [(17,8),(23,7),(14,12),(19,9),(16,11),(27,6),(18,13),
+                (21,8),(32,7),(15,14),(24,9),(26,8),(13,17),(28,7)]:
+        result=a*b
+        bank.append((f'What is {a} × {b}?',str(result),
+                     [str(result+b),str(result-b),str(result+a)]))
+    unique={}
+    for q,answer,wrong in bank:
+        if len(set([answer]+wrong))==4:
+            unique[q]=(q,answer,wrong)
+    return list(unique.values())
+
+QUESTIONS = build_question_bank()
+
 conn = sqlite3.connect(DB_PATH, isolation_level=None, check_same_thread=False)
 conn.row_factory = sqlite3.Row
 conn.execute('PRAGMA journal_mode=WAL')
@@ -85,6 +209,9 @@ CREATE TABLE IF NOT EXISTS expedition (
 CREATE TABLE IF NOT EXISTS expedition_score (
  uid INTEGER, day INTEGER, count INTEGER DEFAULT 0, PRIMARY KEY(uid,day));
 ''')
+# Additive migration: retain existing Railway /data player progress.
+if 'ancient_keys' not in {row['name'] for row in conn.execute('PRAGMA table_info(players)')}:
+    conn.execute('ALTER TABLE players ADD COLUMN ancient_keys INTEGER NOT NULL DEFAULT 0')
 
 def now(): return int(time.time())
 def iso_ts(s): return int(dt.datetime.fromisoformat(s.replace('Z','+00:00')).timestamp())
@@ -118,7 +245,7 @@ def regen(uid):
         conn.execute('UPDATE players SET hp_tick=? WHERE uid=?',(now(),uid))
 
 def change(uid,**fields):
-    allowed={'hp','floor','floor_steps','bronze','silver','gold_keys','gold','score','correct','attempts','shield','regen_upgrade','potions','question_history'}
+    allowed={'hp','floor','floor_steps','bronze','silver','gold_keys','ancient_keys','gold','score','correct','attempts','shield','regen_upgrade','potions','question_history'}
     assert set(fields)<=allowed
     if fields: conn.execute('UPDATE players SET '+','.join(f'{k}=?' for k in fields)+' WHERE uid=?',(*fields.values(),uid))
 
@@ -135,53 +262,87 @@ def steps_required(floor_num):
 
 def make_challenge(uid,mode,level=1):
     # All randomness is server-side. No answers appear in custom IDs.
-    kinds=['quiz','quiz','quiz','pattern','memory','lock','path']
+    kinds=['quiz','quiz','quiz','pattern','pattern','memory','lock','path']
     kind=random.choice(kinds)
     payload={}
     if kind=='quiz':
         p=player(uid)
         hist=json.loads(p['question_history'])
-        candidates=[i for i in range(len(QUESTIONS)) if i not in hist[-min(25,len(QUESTIONS)-1):]]
+        recent=set(hist[-min(500,len(QUESTIONS)-1):])
+        candidates=[i for i in range(len(QUESTIONS)) if i not in recent]
         idx=random.choice(candidates or list(range(len(QUESTIONS))))
         q,answer,wrong=QUESTIONS[idx]
         choices=[answer]+wrong
         random.shuffle(choices)
         payload={'question':q,'options':choices,'answer':choices.index(answer),'qid':idx}
         hist.append(idx)
-        change(uid,question_history=json.dumps(hist[-40:]))
+        change(uid,question_history=json.dumps(hist[-500:]))
         duration=10
     elif kind=='pattern':
-        start=random.randint(1,12); step=random.randint(2,9)
-        answer=start+step*4
+        difficulty=1 if level<=10 else 2 if level<=30 else 3
+        pattern_type=random.choice(['add','multiply','squares','alternate'] if difficulty==1 else ['multiply','squares','alternate','difference','fibonacci'])
+        if pattern_type=='add':
+            start=random.randint(1,15);step=random.randint(2,9)
+            sequence=[start+i*step for i in range(5)]
+        elif pattern_type=='multiply':
+            start=random.randint(1,4);factor=random.randint(2,3)
+            sequence=[start*factor**i for i in range(5)]
+        elif pattern_type=='squares':
+            offset=random.randint(0,8)
+            sequence=[(i+2)**2+offset for i in range(5)]
+        elif pattern_type=='alternate':
+            start=random.randint(2,14);a=random.randint(2,7);b=random.randint(8,15)
+            sequence=[start]
+            for i in range(4):sequence.append(sequence[-1]+(a if i%2==0 else b))
+        elif pattern_type=='difference':
+            start=random.randint(1,20);step=random.randint(2,6)
+            sequence=[start]
+            for i in range(1,5):sequence.append(sequence[-1]+step*i)
+        else:  # Fibonacci-style: each next number is the sum of the previous two.
+            sequence=[random.randint(2,8),random.randint(3,11)]
+            for i in range(3):sequence.append(sequence[-1]+sequence[-2])
+        answer=sequence[-1]
         opts={answer}
-        while len(opts)<4: opts.add(answer+random.choice([-3,-2,-1,1,2,3,4])*step)
+        while len(opts)<4:
+            candidate=answer+random.choice([-8,-6,-4,-3,-2,-1,1,2,3,4,6,8])
+            if candidate>=0:opts.add(candidate)
         choices=list(opts);random.shuffle(choices)
-        payload={'question':f'Complete the sequence: {start}, {start+step}, {start+2*step}, {start+3*step}, ?', 'options':list(map(str,choices)),'answer':choices.index(answer)}
-        duration=30
+        payload={'question':'Complete the sequence: '+', '.join(map(str,sequence[:-1]))+', ?',
+                 'options':list(map(str,choices)),'answer':choices.index(answer),'pattern_type':pattern_type}
+        duration=20 if difficulty==1 else 25 if difficulty==2 else 35
     elif kind=='memory':
-        runes=['☀','☾','◆','✦','♜','♠']
-        seq=random.sample(runes,3 if level<30 else 4)
+        runes=['☀','☾','◆','✦','♜','♠','♣','⬟']
+        count=5 if level<=10 else 6 if level<=30 else 7
+        reveal=4 if count==4 else 5 if count==5 else 6
+        answer_seconds=15 if count==4 else 20 if count==5 else 25
+        seq=random.sample(runes,count)
         options=[' '.join(seq)]
         while len(options)<4:
             shuffled=seq[:];random.shuffle(shuffled)
             val=' '.join(shuffled)
             if val not in options:options.append(val)
         random.shuffle(options)
-        payload={'sequence':' '.join(seq),'options':options,'answer':options.index(' '.join(seq)),'reveal_until':now()+5}
-        duration=35
+        payload={'sequence':' '.join(seq),'options':options,'answer':options.index(' '.join(seq)),
+                 'reveal_until':now()+reveal}
+        duration=reveal+answer_seconds
     elif kind=='lock':
         symbols=['☀','☾','◆','✦']
-        goal=[random.randrange(4) for _ in range(3)]
+        # Clues are generated from the hidden combination, rather than showing it.
+        first=random.randrange(4)
+        gap1=random.choice([1,2,3]);gap2=random.choice([1,2,3])
+        goal=[first,(first+gap1)%4,(first+gap1+gap2)%4]
         current=[random.randrange(4) for _ in range(3)]
         if goal==current:current[0]=(current[0]+1)%4
-        payload={'goal':goal,'current':current,'symbols':symbols}
-        duration=60
+        payload={'goal':goal,'current':current,'symbols':symbols,'gap1':gap1,'gap2':gap2,
+                 'clues':f'First dial: {symbols[first]}\nSecond dial: {gap1} step(s) clockwise from the first.\nThird dial: {gap2} step(s) clockwise from the second.\nRune order: '+ ' → '.join(symbols)+' → (repeat)'}
+        duration=30 if level<=10 else 35 if level<=30 else 40
     else:
-        # A three-step direction path; the sequence is revealed briefly, then hidden.
         dirs=['⬆','⬇','⬅','➡']
-        seq=[random.choice(dirs) for _ in range(3 if level<30 else 4)]
-        payload={'sequence':seq,'progress':0,'reveal_until':now()+5}
-        duration=65
+        count=5 if level<=10 else 6 if level<=30 else 7
+        seq=[random.choice(dirs) for _ in range(count)]
+        reveal=4
+        payload={'sequence':seq,'progress':0,'reveal_until':now()+reveal}
+        duration=reveal+(25 if level<=10 else 30 if level<=30 else 35)
     conn.execute('INSERT OR REPLACE INTO sessions(uid,mode,kind,payload,deadline,started) VALUES(?,?,?,?,?,?)',
                  (uid,mode,kind,json.dumps(payload),now()+duration,now()))
     return kind
@@ -198,7 +359,7 @@ def base_embed(uid,title='🏰 THE GOLDEN VAULT',description=''):
     e.add_field(name='❤️ Health',value=f"{p['hp']}/100",inline=True)
     e.add_field(name='🏰 Floor',value=f"{p['floor']}/50",inline=True)
     e.add_field(name='💎 Vault Score',value=f"{p['score']:,}",inline=True)
-    e.add_field(name='🗝️ Keys',value=f"Bronze {p['bronze']} · Silver {p['silver']} · Gold {p['gold_keys']}",inline=False)
+    e.add_field(name='🗝️ Keys',value=f"Bronze {p['bronze']} · Silver {p['silver']} · Gold {p['gold_keys']} · Ancient {p['ancient_keys']}",inline=False)
     e.add_field(name='🪙 Gold',value=f"{p['gold']:,} · Potions {p['potions']}",inline=False)
     status=(f'Ends <t:{END}:R>' if active() else f'Starts <t:{START}:R>' if now()<START else 'Event finished')
     e.set_footer(text=f'Day {event_day()+1}/{EVENT_DAYS} · {status} · Private player panel')
@@ -207,23 +368,44 @@ def base_embed(uid,title='🏰 THE GOLDEN VAULT',description=''):
 RULES='''**🏆 Objective:** Highest Vault Score after seven days wins. Ties: highest floor, then best accuracy.
 **🏰 Dungeon:** 50 floors; 2–4 randomly generated challenges per floor. Guardian at every 10th floor. Progress is permanent.
 **❤️ Health:** Start with 100 HP; wrong answers and timeouts cost 10 HP. Recover 10 HP every five minutes, including offline. Healing potions restore 25 HP.
-**⏱️ Timers:** Trivia 10s; patterns 30s; memory 5s reveal + 30s answer; locks 60s; paths 5s reveal + 60s input.
-**🗝️ Treasure:** Earn keys and gold, open chests and build Vault Score. Chests have fixed score values by tier; no random score jackpots.
+**⏱️ Timers:** Trivia 10s; patterns 15–30s; memory 3–5s automatic reveal + 12–20s answer; clue-based locks 25–35s; paths 4s automatic reveal + 25s input.
+**🗝️ Treasure:** Earn Bronze, Silver, Gold and Ancient keys; forge five lower-tier keys into one higher-tier key. Ancient chests award 900 score. Earn keys and gold, open chests and build Vault Score. Chests have fixed score values by tier; no random score jackpots.
 **🧭 Expeditions:** Repeatable 3–5-room expeditions. You may bank loot by leaving; if you collapse, lose half the unbanked gold. First three completed expeditions each day award bonus score.
 **📅 Daily activities:** Five tasks and one guardian per event day; missed event days can be completed later before the event ends. Royal Treasury unlocks at Floor 50.
 **⚖️ Fair play:** Do not use AI, outside answer tools, or share solutions. Randomised challenges and short trivia timers discourage cheating but cannot guarantee prevention.
 **🔒 Privacy:** Challenges and menus are shown privately to each player.'''
-HELP='''**Start:** Use `/play` once, then navigate entirely with buttons.
-**Dungeon:** Tap *Dungeon* → *Start Floor Challenge*. Correct answers move the floor progress bar forward. Floor 10/20/30/40/50 ends with a guardian challenge.
-**Answering:** Select an answer before the timer expires. Memory and path sequences are visible for five seconds; tap *Hide & Start* after viewing them. Lock puzzles require rotating three runes to match the target.
-**Health:** Restores automatically, even while offline. Use a potion in *Workshop* to heal instantly. No loss of completed floors at zero HP.
-**Expeditions:** Start a run, clear rooms, then decide whether to continue or bank. Treasure stays unbanked until you leave or finish. Expeditions can be repeated.
-**Daily:** Choose an event day and one of five tasks; each completed task awards Vault Score and resources. Catch up on missed days while the event is active.
-**Guardian:** One special challenge per day, separate from floor guardians.
-**Workshop:** Buy healing potions and damage protection using gold.
-**Treasure:** Spend keys on chests. Bronze/Silver/Gold chests award 40/120/300 Vault Score.
-**Leaderboard:** Displays the top ten by Vault Score, floor, then accuracy.
-**Timing:** Timers are enforced by the server. Closing Discord does not pause a challenge.'''
+HELP='''**🏰 Getting started**
+Use `/play` to open your private game panel. Navigate with buttons; you do not need any other command. Use **Home** to return to the main menu. If a challenge panel stops working after a bot restart, use `/play` again.
+
+**🎯 Goal and leaderboard**
+Earn the most **Vault Score** during the seven-day event. Open **Leaderboard** to see the top 10. Ties are decided by dungeon progress, then answer accuracy. **Gold** is spending currency; it is not the same as Vault Score.
+
+**🏰 Dungeon (50 floors)**
+Open **Dungeon** and start the next floor challenge. Clear 2–4 random challenges per floor. Every 10th floor has a guardian. Completed floors are saved permanently. Finish Floor 50 to unlock **Royal Treasury**.
+
+**🧩 Questions and puzzles**
+General-knowledge questions have **10 seconds** to answer. Number patterns have **15–30 seconds**. Rune Memory reveals a sequence for **3–5 seconds**, hides it automatically, then gives **12–20 seconds** to reproduce it. Hidden Path hides automatically after **4 seconds**, then gives **25 seconds** for input. Clue-based lockpicking gives **25–35 seconds**. Later floors feature harder puzzles. Question choices and puzzle sequences are randomised; recently seen trivia is tracked to reduce repeats. Timers continue even if you close Discord.
+
+**❤️ Health and recovery**
+You have up to **100 HP**. Wrong answers and timeouts normally cost **10 HP**. Health regenerates by **10 HP every 5 minutes**, including while offline, with workshop upgrades able to improve regeneration. Healing potions restore **25 HP**. At zero HP, wait to recover or use a potion; completed floors are safe.
+
+**🧭 Vault Expeditions**
+Enter a random **3–5 chamber** expedition. Win challenges to gather **unbanked gold**. After chambers, choose whether to continue or leave and bank your gold. If you collapse, you lose **half of your unbanked gold**. Expeditions are repeatable without a daily entry limit, but only your **first three completed expeditions per event day** award expedition bonus Vault Score; later runs still earn resources.
+
+**🗝️ Treasure chests and Key Forge**
+Find Bronze, Silver, Gold and Ancient keys. Open **Treasure** to exchange keys for guaranteed Vault Score: **2 Bronze → 40**, **2 Silver → 120**, **1 Gold → 300**, **1 Ancient → 900**. In **Key Forge**, convert **5 Bronze → 1 Silver**, **5 Silver → 1 Gold**, or **5 Gold → 1 Ancient**. Forging consumes the keys and awards no score until a chest is opened.
+
+**⚒️ Workshop**
+Spend gold on healing potions and upgrades. Shield upgrades reduce damage; regeneration upgrades restore more HP over time.
+
+**📅 Daily Vault and Guardians**
+Each event day has **five daily trials** and **one daily guardian**. Successful daily trials award **70 Vault Score** each; the daily guardian awards **150**. Choose an available day to complete missed trials before the event ends.
+
+**👑 Royal Treasury**
+Unlocks only after **completing Floor 50**. The current Treasury offers **one special trial per event day**, worth **200 Vault Score** on success, with catch-up for missed event days. It is not yet an endless Treasury expedition mode.
+
+**📜 Rules and fair play**
+Open **Rules** for the full event rules. Do not share answers or use AI/answer tools during challenges. Menus and challenges are private to you.'''
 
 class UI(discord.ui.View):
     def __init__(self,uid,page='home',day=None):
@@ -235,6 +417,8 @@ class UI(discord.ui.View):
         async def cb(interaction):
             if interaction.user.id!=self.uid:
                 await interaction.response.send_message('This panel belongs to another player. Use `/play`.',ephemeral=True);return
+            # Acknowledge the button immediately, before database and challenge work.
+            await interaction.response.defer()
             await route(interaction,self.uid,action,self.day)
         b.callback=cb;self.add_item(b)
     def build(self):
@@ -249,7 +433,7 @@ class UI(discord.ui.View):
             self.add('Leaderboard','leaderboard',emoji='🏆',row=2)
             self.add('Rules','rules',emoji='📜',row=2)
             self.add('Help','help',emoji='❔',row=2)
-        elif self.page in ('rules','help','leaderboard','workshop','treasure','dungeon','expeditions','daily','royal','guardian'):
+        elif self.page in ('rules','help','leaderboard','workshop','treasure','dungeon','expeditions','daily','royal','guardian','forge'):
             if self.page=='dungeon':self.add('Start Floor Challenge','start_floor',discord.ButtonStyle.success,disabled=not active() or p['hp']<10 or p['floor']>50)
             if self.page=='expeditions':
                 running=conn.execute('SELECT 1 FROM expedition WHERE uid=?',(self.uid,)).fetchone()
@@ -266,6 +450,12 @@ class UI(discord.ui.View):
                 self.add('Bronze · 2 keys','chest_bronze',disabled=p['bronze']<2 or not active())
                 self.add('Silver · 2 keys','chest_silver',disabled=p['silver']<2 or not active())
                 self.add('Gold · 1 key','chest_gold',disabled=p['gold_keys']<1 or not active())
+                self.add('Ancient · 1 key','chest_ancient',disabled=p['ancient_keys']<1 or not active())
+                self.add('Key Forge','forge',discord.ButtonStyle.primary,emoji='⚒️')
+            if self.page=='forge':
+                self.add('5 Bronze → 1 Silver','forge_bronze',disabled=p['bronze']<5 or not active())
+                self.add('5 Silver → 1 Gold','forge_silver',disabled=p['silver']<5 or not active())
+                self.add('5 Gold → 1 Ancient','forge_gold',disabled=p['gold_keys']<5 or not active())
             if self.page=='daily':
                 for i in range(EVENT_DAYS):self.add(f'Day {i+1}',f'day_{i}',disabled=i>event_day() or not active(),row=i//5)
             if self.page=='guardian':self.add('Face Daily Guardian','start_guardian',discord.ButtonStyle.success,disabled=not active() or p['hp']<10)
@@ -284,14 +474,13 @@ class UI(discord.ui.View):
                 payload=json.loads(s['payload']);kind=s['kind']
                 if kind in ('quiz','pattern','memory'):
                     for i,opt in enumerate(payload['options']):
-                        self.add(str(opt)[:70],f'answer_{i}',discord.ButtonStyle.primary,row=i//2)
+                        self.add(str(opt)[:70],f'answer_{i}',discord.ButtonStyle.primary,row=i//2,disabled=(kind=='memory' and now()<payload.get('reveal_until',0) and not payload.get('hidden')))
                 elif kind=='lock':
                     for i in range(3):self.add(f'Rotate Dial {i+1}',f'rotate_{i}',row=0)
                     self.add('Unlock','unlock',discord.ButtonStyle.success,row=1)
                 elif kind=='path':
-                    for i,sym in enumerate(['⬆','⬇','⬅','➡']):self.add(sym,f'path_{i}',discord.ButtonStyle.primary,row=0)
-                if kind in ('memory','path') and now()<payload.get('reveal_until',0):
-                    self.add('Hide & Start','hide',discord.ButtonStyle.success,row=2)
+                    for i,sym in enumerate(['⬆','⬇','⬅','➡']):self.add(sym,f'path_{i}',discord.ButtonStyle.primary,row=0,disabled=(now()<payload.get('reveal_until',0) and not payload.get('hidden')))
+                # The sequence is hidden automatically; no manual Hide & Start step.
                 self.add('Forfeit Challenge','forfeit',discord.ButtonStyle.danger,row=4)
 
 def challenge_embed(uid):
@@ -305,12 +494,35 @@ def challenge_embed(uid):
         e.add_field(name='Memorise these runes' if visible else 'Which sequence did you see?',value=data['sequence'] if visible else 'Choose the original rune sequence.',inline=False)
     if kind=='lock':
         syms=data['symbols']
-        e.add_field(name='Target',value=' '.join(syms[i] for i in data['goal']),inline=False)
+        e.add_field(name='Combination clues',value=data.get('clues','Match the target: '+ ' '.join(syms[i] for i in data['goal'])),inline=False)
         e.add_field(name='Your dials',value=' '.join(syms[i] for i in data['current']),inline=False)
     if kind=='path':
         visible=now()<data['reveal_until'] and not data.get('hidden')
         e.add_field(name='Safe path' if visible else 'Navigate the path',value=' '.join(data['sequence']) if visible else f"Correct steps: {data['progress']}/{len(data['sequence'])}",inline=False)
     return e
+
+async def auto_hide_sequence(interaction,uid,started,reveal_until):
+    """Automatically replace the ephemeral reveal with the answer panel."""
+    try:
+        await asyncio.sleep(max(0, reveal_until-now()))
+        current=session(uid)
+        if not current or current['started'] != started or current['kind'] not in ('memory','path'):
+            return
+        payload=json.loads(current['payload'])
+        if payload.get('hidden'):
+            return
+        payload['hidden']=True
+        conn.execute('UPDATE sessions SET payload=? WHERE uid=?',(json.dumps(payload),uid))
+        await interaction.edit_original_response(embed=challenge_embed(uid),view=UI(uid,'challenge'))
+    except asyncio.CancelledError:
+        raise
+    except discord.HTTPException:
+        # A stale/deleted Discord panel must not interrupt game progression.
+        pass
+    finally:
+        task=AUTO_HIDE_TASKS.get(uid)
+        if task is asyncio.current_task():
+            AUTO_HIDE_TASKS.pop(uid,None)
 
 async def show(interaction,uid,page='home',note='',day=None):
     p=player(uid)
@@ -325,7 +537,8 @@ async def show(interaction,uid,page='home',note='',day=None):
         ex=conn.execute('SELECT * FROM expedition WHERE uid=?',(uid,)).fetchone()
         desc=f"Current expedition: room **{ex['room']}/{ex['max_rooms']}** · Unbanked gold **{ex['unbanked']}**" if ex else 'Enter a randomly generated 3–5-room vault. Bank treasure or risk it for greater rewards.'
         e=base_embed(uid,'🧭 Vault Expeditions',desc)
-    elif page=='treasure':e=base_embed(uid,'💎 Treasure Chests','Spend keys on guaranteed Vault Score. Bronze: 2 keys → 40 score; Silver: 2 keys → 120 score; Gold: 1 key → 300 score.')
+    elif page=='treasure':e=base_embed(uid,'💎 Treasure Chests','Spend keys on guaranteed Vault Score. Bronze: 2 keys → 40 score; Silver: 2 keys → 120 score; Gold: 1 key → 300 score; Ancient: 1 key → 900 score. Use Key Forge to combine keys.')
+    elif page=='forge':e=base_embed(uid,'⚒️ Royal Key Forge','Convert 5 Bronze → 1 Silver, 5 Silver → 1 Gold, or 5 Gold → 1 Ancient. Forging consumes the five lower-tier keys. Forging does not award score directly.')
     elif page=='workshop':e=base_embed(uid,'⚒️ Workshop',f"Shield level: **{p['shield']}/3** (reduces damage by 2 per level). Regeneration level: **{p['regen_upgrade']}/3** (+2 HP per five minutes per level).")
     elif page=='daily':e=base_embed(uid,'📅 Daily Vault','Choose any unlocked event day. Missed days remain available until the event closes. Each day offers five trials and a daily guardian.')
     elif page=='day':
@@ -340,8 +553,18 @@ async def show(interaction,uid,page='home',note='',day=None):
     else:e=base_embed(uid,description='Explore the dungeon, collect keys, open treasure and compete for the highest Vault Score!')
     if note:e.add_field(name='Update',value=note[:1024],inline=False)
     view=UI(uid,page,day)
-    if interaction.response.is_done():await interaction.followup.send(embed=e,view=view,ephemeral=True)
-    else:await interaction.response.edit_message(embed=e,view=view)
+    if interaction.response.is_done():
+        await interaction.edit_original_response(embed=e,view=view)
+    else:
+        await interaction.response.edit_message(embed=e,view=view)
+    if page=='challenge':
+        current=session(uid)
+        if current and current['kind'] in ('memory','path'):
+            payload=json.loads(current['payload'])
+            if not payload.get('hidden') and now()<payload.get('reveal_until',0):
+                old=AUTO_HIDE_TASKS.get(uid)
+                if not old or old.done():
+                    AUTO_HIDE_TASKS[uid]=asyncio.create_task(auto_hide_sequence(interaction,uid,current['started'],payload['reveal_until']))
 
 async def complete(uid,success,mode,kind,reason=''):
     p=player(uid)
@@ -411,7 +634,7 @@ async def route(interaction,uid,action,day=None):
         page,msg=await complete(uid,False,mode,kind,'Time expired.')
         if action.startswith(('answer_','rotate_','path_')) or action in ('unlock','hide','forfeit'):
             await show(interaction,uid,page,msg,day=day);return
-    if action in ('home','dungeon','expeditions','daily','treasure','workshop','royal','leaderboard','rules','help'):
+    if action in ('home','dungeon','expeditions','daily','treasure','workshop','royal','leaderboard','rules','help','forge'):
         await show(interaction,uid,action,day=day);return
     if action.startswith('day_'):
         await show(interaction,uid,'day',day=int(action.split('_')[1]));return
@@ -443,11 +666,21 @@ async def route(interaction,uid,action,day=None):
         if s and s['mode']=='exp':await show(interaction,uid,'challenge','Finish or forfeit the current challenge first.');return
         conn.execute('DELETE FROM expedition WHERE uid=?',(uid,))
         page,msg=bank_exp(uid,ex['unbanked'],ex['daily_day']);await show(interaction,uid,page,msg);return
+    if action.startswith('forge_'):
+        tier=action.split('_',1)[1]
+        recipes={'bronze':('bronze','silver'),'silver':('silver','gold_keys'),'gold':('gold_keys','ancient_keys')}
+        if tier not in recipes:await show(interaction,uid,'forge','Unknown recipe.');return
+        source,target=recipes[tier]
+        # Atomic conditional update prevents concurrent button presses duplicating keys.
+        with conn:
+            updated=conn.execute(f'UPDATE players SET {source}={source}-5, {target}={target}+1 WHERE uid=? AND {source}>=5',(uid,)).rowcount
+        await show(interaction,uid,'forge','⚒️ Forged one higher-tier key!' if updated else 'You need five keys of the required tier.');return
     if action.startswith('chest_'):
         tier=action.split('_')[1]
-        field,cost,points={'bronze':('bronze',2,40),'silver':('silver',2,120),'gold':('gold_keys',1,300)}[tier]
-        if p[field]<cost:await show(interaction,uid,'treasure','Not enough keys.');return
-        change(uid,**{field:p[field]-cost,'score':p['score']+points})
+        field,cost,points={'bronze':('bronze',2,40),'silver':('silver',2,120),'gold':('gold_keys',1,300),'ancient':('ancient_keys',1,900)}[tier]
+        with conn:
+            updated=conn.execute(f'UPDATE players SET {field}={field}-?, score=score+? WHERE uid=? AND {field}>=?',(cost,points,uid,cost)).rowcount
+        if not updated:await show(interaction,uid,'treasure','Not enough keys.');return
         await show(interaction,uid,'treasure',f'🎁 Opened {tier} chest! +{points} Vault Score.');return
     if action=='buy_potion':
         if p['gold']>=100:change(uid,gold=p['gold']-100,potions=p['potions']+1)
@@ -490,7 +723,7 @@ async def route(interaction,uid,action,day=None):
         await show(interaction,uid,'challenge');return
     if kind in ('quiz','pattern','memory') and action.startswith('answer_'):
         if kind=='memory' and now()<payload['reveal_until'] and not payload.get('hidden'):
-            await show(interaction,uid,'challenge','Wait for the reveal to finish or press Hide & Start.');return
+            await show(interaction,uid,'challenge','Wait for the sequence to hide automatically.');return
         index=int(action.split('_')[1]);correct=index==payload['answer']
         change(uid,attempts=p['attempts']+1)
         page,msg=await complete(uid,correct,mode,kind,'Wrong answer.')
@@ -505,7 +738,7 @@ async def route(interaction,uid,action,day=None):
         await show(interaction,uid,page,msg,day=int(mode.split(':')[1]) if ':' in mode else day);return
     if kind=='path' and action.startswith('path_'):
         if now()<payload['reveal_until'] and not payload.get('hidden'):
-            await show(interaction,uid,'challenge','Wait for the reveal to finish or press Hide & Start.');return
+            await show(interaction,uid,'challenge','Wait for the sequence to hide automatically.');return
         chosen=['⬆','⬇','⬅','➡'][int(action.split('_')[1])]
         if chosen!=payload['sequence'][payload['progress']]:
             change(uid,attempts=p['attempts']+1)
@@ -527,7 +760,23 @@ async def play(interaction:discord.Interaction):
     uid=interaction.user.id
     player(uid,interaction.user.display_name)
     # /play creates a fresh private panel; existing panels are also scoped to the player.
-    await interaction.response.send_message(embed=base_embed(uid,description='Explore, earn keys, unlock treasure and climb the leaderboard!'),view=UI(uid,'home'),ephemeral=True)
+    s=session(uid)
+    if s and now()>=s['deadline']:
+        await complete(uid,False,s['mode'],s['kind'],'Time expired.')
+        s=None
+    if s:
+        data=json.loads(s['payload'])
+        if s['kind'] in ('memory','path') and now()>=data.get('reveal_until',0) and not data.get('hidden'):
+            data['hidden']=True
+            conn.execute('UPDATE sessions SET payload=? WHERE uid=?',(json.dumps(data),uid))
+        await interaction.response.send_message(embed=challenge_embed(uid),view=UI(uid,'challenge'),ephemeral=True)
+        # On restart, /play provides a fresh panel and resumes pending reveals.
+        if s['kind'] in ('memory','path') and now()<data.get('reveal_until',0):
+            old=AUTO_HIDE_TASKS.pop(uid,None)
+            if old:old.cancel()
+            AUTO_HIDE_TASKS[uid]=asyncio.create_task(auto_hide_sequence(interaction,uid,s['started'],data['reveal_until']))
+    else:
+        await interaction.response.send_message(embed=base_embed(uid,description='Explore, earn keys, unlock treasure and climb the leaderboard!'),view=UI(uid,'home'),ephemeral=True)
 
 @bot.event
 async def on_ready():
