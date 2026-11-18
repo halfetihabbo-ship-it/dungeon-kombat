@@ -972,20 +972,16 @@ async def play(interaction:discord.Interaction):
     else:
         await interaction.response.send_message(embed=base_embed(uid,description='Explore, earn keys, unlock treasure and climb the leaderboard!'),view=UI(uid,'home'),ephemeral=True)
 
-@bot.tree.command(name='regen_test', description='Admin testing: restore your health instantly')
+@bot.tree.command(name='regen_test', description='Restore your health instantly')
 @app_commands.describe(amount='HP to restore (leave blank to fully heal)')
-@app_commands.default_permissions(administrator=True)
 async def regen_test(interaction: discord.Interaction, amount: app_commands.Range[int, 1, 100] | None = None):
-    if not interaction.guild or not interaction.user.guild_permissions.administrator:
-        await interaction.response.send_message('This testing command is for server administrators only.', ephemeral=True)
-        return
     uid = interaction.user.id
     p = player(uid, interaction.user.display_name)
     old_hp = p['hp']
     new_hp = MAX_HP if amount is None else min(MAX_HP, old_hp + amount)
     conn.execute('UPDATE players SET hp=?, hp_tick=? WHERE uid=?', (new_hp, now(), uid))
     await interaction.response.send_message(
-        f'❤️ Testing health restored: **{old_hp} → {new_hp}/{MAX_HP} HP**. '
+        f'❤️ Health restored: **{old_hp} → {new_hp}/{MAX_HP} HP**. '
         'Use `/play` to refresh your game panel.', ephemeral=True
     )
 
