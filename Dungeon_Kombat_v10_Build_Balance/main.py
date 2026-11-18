@@ -213,6 +213,57 @@ CREATE TABLE IF NOT EXISTS expedition_score (
 if 'ancient_keys' not in {row['name'] for row in conn.execute('PRAGMA table_info(players)')}:
     conn.execute('ALTER TABLE players ADD COLUMN ancient_keys INTEGER NOT NULL DEFAULT 0')
 
+conn.executescript('''
+CREATE TABLE IF NOT EXISTS treasury_progress (
+ uid INTEGER PRIMARY KEY,
+ completed_runs INTEGER NOT NULL DEFAULT 0,
+ total_chambers INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS treasury_runs (
+ uid INTEGER PRIMARY KEY,
+ tier INTEGER NOT NULL,
+ room INTEGER NOT NULL,
+ max_rooms INTEGER NOT NULL,
+ unbanked_gold INTEGER NOT NULL DEFAULT 0
+);
+''')
+TREASURY_RATES = (
+    (10,50,35,5),
+    (0,40,50,10),
+    (0,30,55,15),
+    (0,20,60,20),
+    (0,10,60,30),
+)
+FLOOR_RATES = (
+    (90,10,0,0),
+    (70,25,5,0),
+    (45,40,14,1),
+    (25,45,27,3),
+    (10,35,45,10),
+)
+KEY_FIELDS = ('bronze','silver','gold_keys','ancient_keys')
+KEY_NAMES = ('Bronze','Silver','Gold','Ancient')
+TREASURY_NAMES = ('Royal Chambers','Ancient Chambers','Cursed Chambers','Mythic Chambers','Golden Sanctum')
+# Each completed tier requires mastery of the previous tier.
+TREASURY_UNLOCK_RUNS = (0,3,8,16,28)
+
+def treasury_tier(uid):
+    row=conn.execute('SELECT completed_runs FROM treasury_progress WHERE uid=?',(uid,)).fetchone()
+    count=row['completed_runs'] if row else 0
+    return max(i+1 for i,required in enumerate(TREASURY_UNLOCK_RUNS) if count>=required)
+
+def key_roll(rates):
+    return random.choices(range(4),weights=rates,k=1)[0]
+
+def award_key(uid,rates,guaranteed_min=0):
+    index=max(guaranteed_min,key_roll(rates))
+    field=KEY_FIELDS[index]
+    conn.execute(f'UPDATE players SET {field}={field}+1 WHERE uid=?',(uid,))
+    return KEY_NAMES[index]
+
+def floor_rates(floor_number):
+    return FLOOR_RATES[min(4,max(0,(floor_number-1)//10))]
+
 def now(): return int(time.time())
 def iso_ts(s): return int(dt.datetime.fromisoformat(s.replace('Z','+00:00')).timestamp())
 configured = os.getenv('EVENT_START')
@@ -385,7 +436,7 @@ def make_challenge(uid,mode,level=1):
                  'reveal_until':now()+reveal}
         duration=reveal+answer_seconds
     elif kind=='lock':
-        payload,duration=generate_lock_puzzle(level,royal=mode.startswith('royal:'))
+        payload,duration=generate_lock_puzzle(level,royal=(mode=='treasury' or mode.startswith('royal:')))
     else:
         dirs=['⬆','⬇','⬅','➡']
         count=5 if level<=10 else 6 if level<=30 else 7
@@ -418,10 +469,10 @@ def base_embed(uid,title='🏰 THE GOLDEN VAULT',description=''):
 RULES='''**🏆 Objective:** Highest Vault Score after seven days wins. Ties: highest floor, then best accuracy.
 **🏰 Dungeon:** 50 floors; 2–4 randomly generated challenges per floor. Guardian at every 10th floor. Progress is permanent.
 **❤️ Health:** Start with 100 HP; wrong answers and timeouts cost 10 HP. Recover 10 HP every five minutes, including offline. Healing potions restore 25 HP.
-**⏱️ Timers:** Trivia 10s; patterns 15–30s; memory 3–5s automatic reveal + 12–20s answer; clue-based locks 25–35s; paths 4s automatic reveal + 25s input.
-**🗝️ Treasure:** Earn Bronze, Silver, Gold and Ancient keys; forge five lower-tier keys into one higher-tier key. Ancient chests award 900 score. Earn keys and gold, open chests and build Vault Score. Chests have fixed score values by tier; no random score jackpots.
+**⏱️ Timers:** Trivia 10s; patterns 15–30s; memory 3–5s automatic reveal + 12–20s answer; deduction locks 30–75s; paths 4s automatic reveal + 25s input.
+**🗝️ Treasure:** Dungeon keys are randomised and improve with floor progression. Treasury key rarity improves across five tiers; successful chambers have a 40% key chance and full runs guarantee a key. Forge five lower-tier keys into one higher-tier key. Ancient chests award 900 score. Earn keys and gold, open chests and build Vault Score. Chests have fixed score values by tier; no random score jackpots.
 **🧭 Expeditions:** Repeatable 3–5-room expeditions. You may bank loot by leaving; if you collapse, lose half the unbanked gold. First three completed expeditions each day award bonus score.
-**📅 Daily activities:** Five tasks and one guardian per event day; missed event days can be completed later before the event ends. Royal Treasury unlocks at Floor 50.
+**📅 Daily activities:** Five tasks and one guardian per event day; missed event days can be completed later before the event ends. Royal Treasury unlocks after completing Floor 50 and offers unlimited runs.
 **⚖️ Fair play:** Do not use AI, outside answer tools, or share solutions. Randomised challenges and short trivia timers discourage cheating but cannot guarantee prevention.
 **🔒 Privacy:** Challenges and menus are shown privately to each player.'''
 HELP='''**🏰 Getting started**
@@ -451,8 +502,11 @@ Spend gold on healing potions and upgrades. Shield upgrades reduce damage; regen
 **📅 Daily Vault and Guardians**
 Each event day has **five daily trials** and **one daily guardian**. Successful daily trials award **70 Vault Score** each; the daily guardian awards **150**. Choose an available day to complete missed trials before the event ends.
 
-**👑 Royal Treasury**
-Unlocks only after **completing Floor 50**. The current Treasury offers **one special trial per event day**, worth **200 Vault Score** on success, with catch-up for missed event days. It is not yet an endless Treasury expedition mode.
+**👑 Royal Treasury — unlimited runs**
+Unlock after completing Floor 50. Run unlimited expeditions of 5–9 chambers across five progressively unlocked tiers. Each successful chamber has a **40% key drop chance**; rarity depends on tier. A fully completed run guarantees an additional key and Vault Score; tiers III–V also grant a Gold-or-better guardian key. You can bank unbanked gold early but forfeit the run-completion rewards. Incorrect answers lose 25% of unbanked Treasury gold and cost health; reaching zero HP ends the run. Tier unlocks require 0, 3, 8, 16 and 28 completed runs.
+
+**🗝️ Dungeon key progression**
+Successful dungeon challenges have a **40% chance** to drop a random key. Clearing a floor guarantees a key, with rarity improving every ten floors. Guardian floors guarantee a higher-tier key and may drop an extra key. The Key Forge still converts five lower-tier keys into one higher-tier key.
 
 **📜 Rules and fair play**
 Open **Rules** for the full event rules. Do not share answers or use AI/answer tools during challenges. Menus and challenges are private to you.'''
@@ -509,7 +563,13 @@ class UI(discord.ui.View):
             if self.page=='daily':
                 for i in range(EVENT_DAYS):self.add(f'Day {i+1}',f'day_{i}',disabled=i>event_day() or not active(),row=i//5)
             if self.page=='guardian':self.add('Face Daily Guardian','start_guardian',discord.ButtonStyle.success,disabled=not active() or p['hp']<10)
-            if self.page=='royal':self.add('Royal Trial','start_royal',discord.ButtonStyle.success,disabled=not active() or p['floor']<=50 or p['hp']<10)
+            if self.page=='royal':
+                run=conn.execute('SELECT * FROM treasury_runs WHERE uid=?',(self.uid,)).fetchone()
+                if run:
+                    self.add('Next Treasury Chamber','treasury_next',discord.ButtonStyle.success,disabled=not active() or p['hp']<10 or bool(session(self.uid)))
+                    self.add('Bank & Leave','treasury_bank',discord.ButtonStyle.primary,disabled=bool(session(self.uid)))
+                else:
+                    self.add('Start Treasury Run','treasury_start',discord.ButtonStyle.success,disabled=not active() or p['floor']<=50 or p['hp']<10)
             self.add('Main Menu','home',discord.ButtonStyle.primary,'🏠',row=4)
         elif self.page=='day':
             for i in range(5):
@@ -595,7 +655,24 @@ async def show(interaction,uid,page='home',note='',day=None):
         completed=conn.execute('SELECT COUNT(*) n FROM daily WHERE uid=? AND day=? AND task BETWEEN 0 AND 4',(uid,day)).fetchone()['n']
         e=base_embed(uid,f'📅 Day {day+1} Vault Trials',f'Completed: **{completed}/5**. Each trial has a randomised challenge and awards 70 Vault Score on success.')
     elif page=='guardian':e=base_embed(uid,'🐉 Daily Guardian','One guardian challenge per event day, worth 150 Vault Score. Select the day in Daily Vault first to target a previous day.')
-    elif page=='royal':e=base_embed(uid,'👑 Royal Treasury','Unlock at Floor 50. One special trial per event day (including catch-up days), worth 200 Vault Score.')
+    elif page=='royal':
+        run=conn.execute('SELECT * FROM treasury_runs WHERE uid=?',(uid,)).fetchone()
+        tier=treasury_tier(uid)
+        countrow=conn.execute('SELECT completed_runs FROM treasury_progress WHERE uid=?',(uid,)).fetchone()
+        runs=countrow['completed_runs'] if countrow else 0
+        if p['floor']<=50:
+            desc='🔒 Complete all 50 dungeon floors to unlock unlimited Royal Treasury expeditions.'
+        else:
+            desc=(f'**Current tier:** {tier}/5 — {TREASURY_NAMES[tier-1]}\\n'
+                  f'**Completed runs:** {runs}\\n'
+                  f'**Key chance per cleared chamber:** 40%\\n'
+                  f'**Guaranteed key:** 1 upon completing a run\\n'
+                  f'**Key rarity (Bronze / Silver / Gold / Ancient):** {" / ".join(map(str,TREASURY_RATES[tier-1]))}%\\n'
+                  f'**Run length:** {5+tier-1} chambers\\n'
+                  f'**Next tier:** '+(f'{TREASURY_UNLOCK_RUNS[tier]-runs} more completed runs' if tier<5 else 'Maximum tier reached'))
+            if run:
+                desc+=f"\\n\\n**Active run:** {run['room']}/{run['max_rooms']} chambers · {run['unbanked_gold']} unbanked gold"
+        e=base_embed(uid,'👑 Royal Treasury',desc)
     elif page=='leaderboard':
         leaders=conn.execute('SELECT * FROM players ORDER BY score DESC,floor DESC,(correct*1.0/MAX(attempts,1)) DESC LIMIT 10').fetchall()
         lines=[f"**{i}.** {discord.utils.escape_markdown(r['name'])[:25]} — 💎 **{r['score']:,}** · Floor {min(50,r['floor'])} · {round(100*r['correct']/max(1,r['attempts']))}%" for i,r in enumerate(leaders,1)]
@@ -623,26 +700,62 @@ async def complete(uid,success,mode,kind,reason=''):
         if reason in ('Time expired.','Challenge forfeited.'):
             change(uid,attempts=p['attempts']+1)
         lost=harm(uid,10)
+        if mode=='treasury':
+            run=conn.execute('SELECT * FROM treasury_runs WHERE uid=?',(uid,)).fetchone()
+            if run:
+                penalty=run['unbanked_gold']//4
+                conn.execute('UPDATE treasury_runs SET unbanked_gold=unbanked_gold-? WHERE uid=?',(penalty,uid))
+                reason+=f' Lost {penalty} unbanked Treasury gold.'
+                if player(uid)['hp']==0:
+                    remaining=run['unbanked_gold']-penalty
+                    conn.execute('DELETE FROM treasury_runs WHERE uid=?',(uid,))
+                    change(uid,gold=player(uid)['gold']+remaining//2)
+                    reason+=f' Treasury run collapsed; recovered {remaining//2} gold.'
         if mode=='exp' and player(uid)['hp']==0:
             ex=conn.execute('SELECT * FROM expedition WHERE uid=?',(uid,)).fetchone()
             if ex:
                 conn.execute('DELETE FROM expedition WHERE uid=?',(uid,))
                 change(uid,gold=player(uid)['gold']+ex['unbanked']//2)
                 reason += f' Expedition collapsed; recovered {ex["unbanked"]//2} of {ex["unbanked"]} unbanked gold.'
-        return 'dungeon' if mode=='floor' else 'expeditions' if mode=='exp' else 'day' if mode.startswith('task:') else 'home', f'❌ {reason or "Challenge failed."} Lost {lost} HP.'
+        return 'dungeon' if mode=='floor' else 'expeditions' if mode=='exp' else 'day' if mode.startswith('task:') else 'royal' if mode=='treasury' else 'home', f'❌ {reason or "Challenge failed."} Lost {lost} HP.'
     change(uid,correct=p['correct']+1,gold=p['gold']+20)
     if mode=='floor':
         progress=p['floor_steps']+1
         if progress>=steps_required(p['floor']):
             f=p['floor']
-            if f%10==0:
-                # The final step on every 10th floor is the guardian challenge.
-                change(uid,floor=f+1,floor_steps=0,bronze=p['bronze']+2,silver=p['silver']+1,score=p['score']+100)
-                return 'dungeon',f'🏆 Floor {f} Guardian defeated! +2 bronze, +1 silver, +100 score, +20 gold.'
-            change(uid,floor=f+1,floor_steps=0,bronze=p['bronze']+2,score=p['score']+20)
-            return 'dungeon',f'🏰 Floor {f} cleared! +2 bronze keys, +20 score, +20 gold.'
-        change(uid,floor_steps=progress,bronze=p['bronze']+1)
-        return 'dungeon',f'✅ Challenge passed! +1 bronze key, +20 gold. Progress {progress}/{steps_required(p["floor"])}.'
+            change(uid,floor=f+1,floor_steps=0,score=p['score']+(100 if f%10==0 else 20))
+            earned=award_key(uid,floor_rates(f),guaranteed_min=(1 if f%10==0 and f<=20 else 2 if f%10==0 else 0))
+            bonus=''
+            if f%10==0 and random.random()<0.25:
+                bonus=' Bonus key: '+award_key(uid,floor_rates(f))+'.'
+            return 'dungeon',f'🏆 Floor {f} cleared! +{100 if f%10==0 else 20} score, {earned} Key.{bonus}'
+        change(uid,floor_steps=progress)
+        earned=award_key(uid,floor_rates(p['floor'])) if random.random()<0.40 else None
+        return 'dungeon',f'✅ Challenge passed! +20 gold'+(f', {earned} Key' if earned else '')+f'. Progress {progress}/{steps_required(p["floor"])}.'
+    if mode=='treasury':
+        run=conn.execute('SELECT * FROM treasury_runs WHERE uid=?',(uid,)).fetchone()
+        if not run:return 'royal','Treasury run is no longer active.'
+        tier=run['tier']
+        loot=run['unbanked_gold']+random.randint(45,75)*tier
+        conn.execute('INSERT INTO treasury_progress(uid,completed_runs,total_chambers) VALUES(?,0,1) ON CONFLICT(uid) DO UPDATE SET total_chambers=total_chambers+1',(uid,))
+        drop=award_key(uid,TREASURY_RATES[tier-1]) if random.random()<0.40 else None
+        msg=f'💎 Chamber cleared! +{loot-run["unbanked_gold"]} unbanked gold.'
+        if drop:msg+=f' Found {drop} Key!'
+        if run['room']>=run['max_rooms']:
+            guaranteed=award_key(uid,TREASURY_RATES[tier-1])
+            guardian=('Gold Key' if tier>=3 else 'Silver Key')
+            if tier>=3:
+                award_key(uid,TREASURY_RATES[tier-1],guaranteed_min=2)
+            conn.execute('DELETE FROM treasury_runs WHERE uid=?',(uid,))
+            conn.execute('INSERT INTO treasury_progress(uid,completed_runs,total_chambers) VALUES(?,1,0) ON CONFLICT(uid) DO UPDATE SET completed_runs=completed_runs+1',(uid,))
+            current=player(uid)
+            score=100*tier
+            change(uid,gold=current['gold']+loot,score=current['score']+score)
+            msg+=f' 🏆 Run complete! Banked {loot} gold, +{score} Vault Score, guaranteed {guaranteed} Key.'
+            if tier>=3:msg+=f' Guardian bonus: {guardian} or better!'
+            return 'royal',msg
+        conn.execute('UPDATE treasury_runs SET room=room+1,unbanked_gold=? WHERE uid=?',(loot,uid))
+        return 'royal',msg+' Continue or bank safely.'
     if mode=='exp':
         ex=conn.execute('SELECT * FROM expedition WHERE uid=?',(uid,)).fetchone()
         if not ex:return 'expeditions','Expedition no longer active.'
@@ -699,6 +812,29 @@ async def route(interaction,uid,action,day=None):
         if p['floor']>50:await show(interaction,uid,'royal','All 50 floors are complete!');return
         if p['hp']<10:await show(interaction,uid,'dungeon','You need at least 10 HP. Rest or use a potion.');return
         make_challenge(uid,'floor',p['floor']);await show(interaction,uid,'challenge');return
+    if action=='treasury_start':
+        if s:await show(interaction,uid,'challenge','Finish your current challenge first.');return
+        if p['floor']<=50:await show(interaction,uid,'royal','Complete Floor 50 first.');return
+        if p['hp']<10:await show(interaction,uid,'royal','Recover health first.');return
+        if conn.execute('SELECT 1 FROM treasury_runs WHERE uid=?',(uid,)).fetchone():
+            await show(interaction,uid,'royal','Finish your current run first.');return
+        tier=treasury_tier(uid)
+        conn.execute('INSERT INTO treasury_runs(uid,tier,room,max_rooms,unbanked_gold) VALUES(?,?,?,?,0)',(uid,tier,1,4+tier))
+        await show(interaction,uid,'royal','👑 New Treasury run started!');return
+    if action=='treasury_next':
+        if s:await show(interaction,uid,'challenge');return
+        run=conn.execute('SELECT * FROM treasury_runs WHERE uid=?',(uid,)).fetchone()
+        if not run:await show(interaction,uid,'royal','Start a Treasury run first.');return
+        if p['hp']<10:await show(interaction,uid,'royal','Recover health first.');return
+        make_challenge(uid,'treasury',51+run['tier']*10)
+        await show(interaction,uid,'challenge');return
+    if action=='treasury_bank':
+        if s:await show(interaction,uid,'challenge','Finish the current challenge first.');return
+        run=conn.execute('SELECT * FROM treasury_runs WHERE uid=?',(uid,)).fetchone()
+        if not run:await show(interaction,uid,'royal','No active run.');return
+        conn.execute('DELETE FROM treasury_runs WHERE uid=?',(uid,))
+        change(uid,gold=p['gold']+run['unbanked_gold'])
+        await show(interaction,uid,'royal',f'🏦 Banked {run["unbanked_gold"]} gold. No completion key or score awarded.');return
     if action=='start_expedition':
         if s:await show(interaction,uid,'challenge');return
         if p['hp']<10:await show(interaction,uid,'expeditions','You need at least 10 HP.');return
@@ -754,13 +890,6 @@ async def route(interaction,uid,action,day=None):
         if s:await show(interaction,uid,'challenge');return
         if p['hp']<10:await show(interaction,uid,'guardian','Recover health first.',day);return
         make_challenge(uid,f'guardian:{day}',p['floor']);await show(interaction,uid,'challenge',day=day);return
-    if action=='start_royal':
-        if p['floor']<=50:await show(interaction,uid,'royal','Reach Floor 50 and complete it to unlock.');return
-        days=[d for d in range(event_day()+1) if not conn.execute('SELECT 1 FROM daily WHERE uid=? AND day=? AND task=6',(uid,d)).fetchone()]
-        if not days:await show(interaction,uid,'royal','All available Royal Trials are completed.');return
-        if s:await show(interaction,uid,'challenge');return
-        if p['hp']<10:await show(interaction,uid,'royal','Recover health first.');return
-        make_challenge(uid,f'royal:{days[0]}',p['floor']);await show(interaction,uid,'challenge');return
     if action=='forfeit':
         if not s:await show(interaction,uid,'home');return
         page,msg=await complete(uid,False,s['mode'],s['kind'],'Challenge forfeited.')
@@ -827,6 +956,23 @@ async def play(interaction:discord.Interaction):
             AUTO_HIDE_TASKS[uid]=asyncio.create_task(auto_hide_sequence(interaction,uid,s['started'],data['reveal_until']))
     else:
         await interaction.response.send_message(embed=base_embed(uid,description='Explore, earn keys, unlock treasure and climb the leaderboard!'),view=UI(uid,'home'),ephemeral=True)
+
+@bot.tree.command(name='regen_test', description='Admin testing: restore your health instantly')
+@app_commands.describe(amount='HP to restore (leave blank to fully heal)')
+@app_commands.default_permissions(administrator=True)
+async def regen_test(interaction: discord.Interaction, amount: app_commands.Range[int, 1, 100] | None = None):
+    if not interaction.guild or not interaction.user.guild_permissions.administrator:
+        await interaction.response.send_message('This testing command is for server administrators only.', ephemeral=True)
+        return
+    uid = interaction.user.id
+    p = player(uid, interaction.user.display_name)
+    old_hp = p['hp']
+    new_hp = MAX_HP if amount is None else min(MAX_HP, old_hp + amount)
+    conn.execute('UPDATE players SET hp=?, hp_tick=? WHERE uid=?', (new_hp, now(), uid))
+    await interaction.response.send_message(
+        f'❤️ Testing health restored: **{old_hp} → {new_hp}/{MAX_HP} HP**. '
+        'Use `/play` to refresh your game panel.', ephemeral=True
+    )
 
 @bot.event
 async def on_ready():
