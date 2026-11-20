@@ -88,7 +88,7 @@ def help_embed():
         '🧙 **Hero** — Build Specialisations, Inventory, Enchanting, Relics, Companions and Skill Tree.\n'
         '🏰 **Kingdom** — Blacksmith, Adventurer Camp and Travelling Merchant.\n'
         '🎯 **Activities** — Wheel of Fortune, Quest Board, Daily Bounty, Gauntlet, Arena Trials and Treasure Vault.\n'
-        '📖 **Info** — Leaderboard and Adventurer Log (12-hour progress reports).\n📘 **Help** — Open this complete guide directly from Home.\n\n'
+        '📖 **Info** — Adventurer Log (12-hour progress reports) and other information.\n📘 **Help** — Open this complete guide directly from Home.\n🏆 **Leaderboard** — View the current top adventurers and event standings instantly.\n\n'
         '## ⚔️ ACTIVE GAMEPLAY\n'
         '🎮 **Expeditions** — Three charges maximum, recharge one every two hours. Five rooms: Fight, Scout or Rest. Finish to bank XP and resources.\n'
         '🏰 **Checkpoints** — Every 10th floor (10, 20, 30, etc.), except legendary boss floors (50, 100, etc.), pauses automatic climbing. You receive **one Discord DM per checkpoint** when progress is processed through /play or Refresh. Go to **/play → 🏰 Dungeon → Checkpoint** and complete **Guard → Focus → Attack** to resume. If DMs are disabled, the checkpoint remains visible in your game UI.\n'
@@ -180,7 +180,7 @@ def player_embed(s, notice='', screen='home'):
                     value=(f'⚔️ **{s["weapon"]["name"]}**  +{s["weapon"]["plus"]} · R{s["weapon"]["refine"]}\n'
                            f'🛡️ **{s["armour"]["name"]}**  +{s["armour"]["plus"]} · R{s["armour"]["refine"]}'), inline=False)
         e.add_field(name='🚀 QUICK NAVIGATION',
-                    value='**🔄 Refresh** — Collect idle progress.\n**🏰 Dungeon** — Expeditions, Checkpoints, Bosses & Discoveries.\n**🧙 Hero** — Builds, Inventory, Enchanting, Relics, Pets & Skills.\n**🏰 Kingdom** — Blacksmith, Camp & Merchant.\n**🎯 Activities** — Wheel, Quests, Arena & Bounty.\n**📖 Info** — Leaderboard & Adventurer Log.\n**📘 Help** — Open the complete game guide instantly.',inline=False)
+                    value='**🔄 Refresh** — Collect idle progress.\n**🏰 Dungeon** — Expeditions, Checkpoints, Bosses & Discoveries.\n**🧙 Hero** — Builds, Inventory, Enchanting, Relics, Pets & Skills.\n**🏰 Kingdom** — Blacksmith, Camp & Merchant.\n**🎯 Activities** — Wheel, Quests, Arena & Bounty.\n**📖 Info** — Leaderboard & Adventurer Log.\n**📘 Help** — Open the complete game guide instantly.\n**🏆 Leaderboard** — See the latest competition standings.',inline=False)
         e.add_field(name='📜 LATEST ADVENTURE REPORT', value=(notice or s.get('last_report') or 'Your journey begins!')[:1024], inline=False)
     elif screen=='journal':
         with game.open_db() as db:
@@ -533,7 +533,8 @@ class GameView(discord.ui.View):
                      ('Kingdom','kingdom','🏰',None,discord.ButtonStyle.primary),
                      ('Activities','activities_menu','🎯',None,discord.ButtonStyle.primary),
                      ('Info','info','📖',None,discord.ButtonStyle.secondary),
-                     ('Help','help','📘',None,discord.ButtonStyle.success)]
+                     ('Help','help','📘',None,discord.ButtonStyle.success),
+                     ('Leaderboard','rankings','🏆',None,discord.ButtonStyle.primary)]
         elif screen=='dungeon':
             buttons=[('Expedition','expedition','⚔️',None,discord.ButtonStyle.success),
                      ('Checkpoint','checkpoint','🏰',None,discord.ButtonStyle.primary),
