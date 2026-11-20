@@ -522,9 +522,12 @@ async def show_player(interaction, screen='home', action=None):
             logging.exception('Unable to deliver interaction error')
 
 class NavButton(discord.ui.Button):
-    def __init__(self, label, screen, *, emoji=None, action=None, style=discord.ButtonStyle.secondary):
+    def __init__(self, label, screen, *, emoji=None, action=None, style=discord.ButtonStyle.secondary, button_key=None):
+        # A screen may have multiple buttons targeting the same destination.
+        # Include a stable per-button key so Discord never receives duplicate IDs.
+        key = button_key or label.lower().replace(" ", "_")
         super().__init__(label=label, emoji=emoji, style=style,
-                         custom_id=f'climber:v2:{screen}:{action or "nav"}')
+                         custom_id=f'climber:v3:{screen}:{action or "nav"}:{key}')
         self.screen, self.action = screen, action
     async def callback(self, interaction):
         if self.screen=='help':
@@ -689,8 +692,8 @@ class GameView(discord.ui.View):
             # Most submenus offer Back and Home; fit within Discord's five rows.
             if len(buttons)<24:
                 buttons.append(('Home','home','🏠',None,discord.ButtonStyle.secondary))
-        for label,screen,emoji,action,style in buttons:
-            self.add_item(NavButton(label,screen,emoji=emoji,action=action,style=style))
+        for index,(label,target,emoji,action,style) in enumerate(buttons):
+            self.add_item(NavButton(label,target,emoji=emoji,action=action,style=style,button_key=f"{index}:{label.lower().replace(chr(32), chr(95))}"))
 
 class InventorySelect(discord.ui.Select):
     def __init__(self,s,kind):
