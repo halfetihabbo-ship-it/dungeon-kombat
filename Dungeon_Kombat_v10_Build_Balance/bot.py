@@ -27,21 +27,33 @@ def get(uid):
     try:return engine.load(str(uid))
     except KeyError:return None
 
+def notification_enabled(uid):
+    row=engine.db.execute('SELECT data FROM events WHERE id=?',(f'dm_notify:{uid}',)).fetchone()
+    return bool(json.loads(row[0]).get('enabled',True)) if row else True
+
+def next_raid_time(p):
+    return START + p.wave*1800 if p.wave<336 else None
+
+def next_raid_text(p):
+    due=next_raid_time(p)
+    if due is None:return 'All 336 invasions completed.'
+    return f'**<t:{int(due)}:R>** (<t:{int(due)}:t> local time)'
+
 def display(p):
     e=discord.Embed(title='🏰 Dungeon Master',description=f'Level **{p.level()}/75** · Gold **{p.gold:,}** · XP **{p.xp:,}** · Shards **{p.shards:,}**',color=0x7d5fff)
     e.add_field(name='Dungeon',value=f'{len(p.rooms)}/{min(MAX_ROOMS,p.capacity())} rooms · {p.style} · Power {p.power():.0f}')
     e.add_field(name='Invasions',value=f'{p.wave}/336 · {p.points:,} points')
     if p.wave<336:
         q=engine.next_preview(p.id)
-        e.add_field(name='⚔️ Next invasion',value=f"Wave {q['wave']}: {q['enemy_type']} · Threat {q['threat']}\n{q['hint']}",inline=False)
+        e.add_field(name='⚔️ Next invasion',value=f"**{next_raid_text(p)}**\nWave {q['wave']}: {q['enemy_type']} · Threat {q['threat']}\n{q['hint']}\n🔔 DM reminders: {'On' if notification_enabled(p.id) else 'Off'} (30 minutes before)",inline=False)
     return e
 
 def help_embed(section='overview'):
     e=discord.Embed(title='📖 Dungeon Master — Guide',color=0x7d5fff)
     pages={
-      'overview':('Welcome to Dungeon Master','Build and defend a dungeon during a **seven-day competition**. NPC invasions occur every **30 minutes**, even while you are offline. Earn leaderboard points and finish in the top three.\n\n**Getting started**\n1. Use `/play` to open your private dashboard.\n2. Add rooms and configure monsters/traps.\n3. Upgrade and arrange rooms to counter the next invasion.\n4. Claim missions, raid fortresses and challenge other players.'),
+      'overview':('Welcome to Dungeon Master','Build and defend a dungeon during a **seven-day competition**. NPC invasions occur every **30 minutes**, even while you are offline. Earn leaderboard points and finish in the top three.\n\n**Getting started**\n1. Use `/play` to open your private dashboard.\n2. Add rooms and configure monsters/traps.\n3. Upgrade and arrange rooms to counter the next invasion.\n4. Claim missions, raid fortresses and challenge other players.\n\n**Tip:** The dashboard shows the next raid time. Use **Raid Alerts** to turn 30-minute DM reminders on or off. Discord privacy settings may block DMs.'),
       'building':('Building & upgrades','Use **Dungeon** → **Add Room** to expand. Select a room from **Dungeon** → **Upgrade Rooms** to improve its monster, trap or room structure.\n\nUse `/configure` to change a room’s monster or trap, and `/reorder` to swap defensive positions. `/rooms` displays the current order.\n\n**Limits:** 15 rooms, monster Lv30, trap Lv20, room Lv15, dungeon master Lv75. Deployment budgets and stacking restrictions prevent excessive combinations.'),
-      'combat':('NPC invasions & combat','An NPC invasion is scheduled every **30 minutes** for up to **336 waves** across seven days. Your dashboard previews the upcoming enemy and its threat. Prepare the right room order, monsters and traps.\n\nDefences are processed automatically, including when you are offline. The wave results award resources and leaderboard points according to performance.'),
+      'combat':('NPC invasions & combat','An NPC invasion is scheduled every **30 minutes** for up to **336 waves** across seven days. Your dashboard previews the upcoming enemy and its threat. Prepare the right room order, monsters and traps.\n\nDefences are processed automatically, including when you are offline. The wave results award resources and leaderboard points according to performance.\n\n**Raid alerts:** The bot can DM you **30 minutes before** each upcoming NPC invasion. Toggle them using `/notifications` or **Raid Alerts** on the main menu. Keep DMs from server members enabled.'),
       'activities':('Raids, PvP & missions','**Fortress Raid:** Repeatable activity with a 20-minute cooldown. Up to 12 rewarded raids per day; leaderboard points from the first six successful raids.\n\n**PvP Raid:** Once every six hours, against an eligible opponent within approximately ±10% dungeon power. Recon identifies the defender’s style.\n\n**Daily Mission:** Defend at least two invasions that event day, then claim the daily reward.'),
       'scoring':('Leaderboard & event rules','Use `/leaderboard` to see the standings. NPC defences are the main source of leaderboard points. PvP and fortress activities provide additional opportunities.\n\nThe competition runs for seven days from the event start. Use `/winners` after the event to see the final top three.\n\n**Commands:** `/play`, `/help`, `/rooms`, `/configure`, `/reorder`, `/leaderboard`, `/winners`.'),
     }
@@ -66,8 +78,12 @@ class Management(discord.ui.View):
         super().__init__(timeout=600);self.owner=str(owner);self.mode=mode;self.selected=selected
         if mode=='room':
             p=get(owner)
-            if p and p.rooms:self.add_item(RoomPicker(p.rooms))
-            buttons=[('Monster +','monster',1),('Trap +','trap',1),('Room +','room',1),('Back','main',2),('Help','help',2)]
+            valid=p is not None and self.selected is not None and 0<=self.selected<len(p.rooms)
+            if not valid:
+                if p and p.rooms:self.add_item(RoomPicker(p.rooms))
+                buttons=[('Back to Dungeon','dungeon',1),('Help','help',1)]
+            else:
+                buttons=[('Monster +','monster',0),('Trap +','trap',0),('Room +','room',0),('Change Room','change_room',1),('Back to Dungeon','dungeon',1),('Help','help',2)]
         elif mode=='dungeon':
             buttons=[('Upgrade Rooms','room_menu',0),('Add Room','add',0),('Room Order','order',1),('Back','main',2),('Help','help',2)]
         elif mode=='activities':
@@ -75,7 +91,7 @@ class Management(discord.ui.View):
         elif mode=='help':
             buttons=[('Overview','overview',0),('Building','building',0),('Combat','combat',1),('Activities','activities_help',1),('Scoring','scoring',2),('Back','main',3)]
         else:
-            buttons=[('Dungeon','dungeon',0),('Activities','activities',0),('Help','help',1),('Refresh','refresh',1),('Exit','exit',2)]
+            buttons=[('Dungeon','dungeon',0),('Activities','activities',0),('Help','help',1),('Raid Alerts','alerts',1),('Refresh','refresh',2),('Exit','exit',2)]
         for label,action,row in buttons:
             style=discord.ButtonStyle.primary if action in ('dungeon','activities','room_menu') else discord.ButtonStyle.secondary
             if action=='exit':style=discord.ButtonStyle.danger
@@ -89,11 +105,24 @@ class Management(discord.ui.View):
         view=Management(self.owner,mode,self.selected if selected is None else selected)
         p=get(self.owner)
         embed=help_embed() if mode=='help' else display(p)
-        if mode=='dungeon':notice=notice or 'Choose a dungeon management action. Use `/configure` to replace equipment and `/reorder` to change defence order.'
-        if mode=='room':notice=notice or 'Select a room above, then choose which upgrade to buy.'
-        if mode=='activities':notice=notice or 'Choose a raid or claim your daily mission.'
+        if mode=='main':notice=notice or ('🏰 **Getting started:** Open **Dungeon** to build and upgrade rooms. Open **Activities** for raids, PvP and missions. **Raid Alerts** toggles DM reminders. **Help** explains every feature.\n\n⚔️ **Next NPC invasion:** '+next_raid_text(p))
+        if mode=='dungeon':notice=notice or '🏰 **Build your defence:** **Upgrade Rooms** lets you select one room and keep upgrading it. **Add Room** expands your dungeon when unlocked. **Room Order** shows the sequence attackers face. Use `/configure` to swap monsters/traps and `/reorder` to swap positions.'
+        if mode=='room':
+            if view.selected is not None and p and 0<=view.selected<len(p.rooms):
+                r=p.rooms[view.selected]
+                header=f'🔒 **Room {view.selected+1} selected** — {r.monster} Lv{r.monster_level} · {r.trap} Lv{r.trap_level} · Room Lv{r.level}\n'
+                notice=header+(notice or 'Keep upgrading this room. Use **Change Room** only when finished.')
+            else:notice=notice or 'Select a room once. It stays selected until you press **Change Room**.'
+        if mode=='activities':notice=notice or '⚔️ **Fortress Raid:** Earn gold and XP (20-minute cooldown). **PvP Raid:** Attack a similar-power player (6-hour cooldown). **Daily Mission:** Claim after two invasions today.\n\nYour next NPC invasion: '+next_raid_text(p)
         await i.response.edit_message(content=notice,embed=embed,view=view)
     async def handle(self,i,action):
+        if action=='alerts':
+            enabled=not notification_enabled(self.owner)
+            async with lock:
+                engine.db.execute('INSERT OR REPLACE INTO events VALUES (?,?)',(f'dm_notify:{self.owner}',json.dumps({'enabled':enabled})))
+            return await self.render(i,'main',f"🔔 Raid DM reminders **{'enabled' if enabled else 'disabled'}**. {'A reminder is sent 30 minutes before the next invasion when Discord allows DMs.' if enabled else 'You will not receive raid reminder DMs.'}")
+        if action=='change_room':
+            return await self.render(i,'room',selected=-1)
         if action in ('main','dungeon','activities','help','refresh','room_menu'):
             mode={'room_menu':'room','refresh':self.mode}.get(action,action)
             return await self.render(i,mode,selected=-1 if action=='room_menu' else None)
@@ -161,7 +190,14 @@ async def play(i:discord.Interaction):
         if not p:
             if not active():return await i.response.send_message('Registration opens when the event starts. The event is not currently active.',ephemeral=True)
             p=engine.create(str(i.user.id))
-    await i.response.send_message(embed=display(p),view=Management(str(i.user.id)),ephemeral=True)
+    await i.response.send_message(content='🏰 **Welcome!** Use **Dungeon** to improve your rooms, **Activities** to earn rewards, **Help** for the full guide, and **Raid Alerts** to manage your 30-minute invasion reminders.\n\n⚔️ Next NPC invasion: '+next_raid_text(p),embed=display(p),view=Management(str(i.user.id)),ephemeral=True)
+
+@client.tree.command(name='notifications',description='Turn NPC invasion DM reminders on or off')
+@app_commands.describe(enabled='Receive a DM 30 minutes before each NPC invasion')
+async def notifications(i:discord.Interaction,enabled:bool):
+    async with lock:
+        engine.db.execute('INSERT OR REPLACE INTO events VALUES (?,?)',(f'dm_notify:{i.user.id}',json.dumps({'enabled':enabled})))
+    await i.response.send_message(f"🔔 NPC invasion DM reminders **{'enabled' if enabled else 'disabled'}**. " + ('I will try to DM you 30 minutes before each upcoming raid. Allow server-member DMs in Discord.' if enabled else 'No further raid reminder DMs will be sent.'),ephemeral=True)
 
 @client.tree.command(name='configure',description='Change a monster or trap in one of your dungeon rooms')
 @app_commands.describe(room='Room number starting from 1',monster='Monster to deploy',trap='Trap to install')
@@ -230,6 +266,35 @@ async def admin_stop(i:discord.Interaction):
     await i.response.send_message('Event stopped.',ephemeral=True)
 
 @tasks.loop(seconds=30)
+async def raid_reminders():
+    # Reminders are for the NEXT scheduled invasion, never for missed/catch-up waves.
+    now=time.time()
+    if not START<=now<START+DURATION:return
+    async with lock:
+        candidates=[]
+        for (uid,) in engine.db.execute('SELECT id FROM players'):
+            p=get(uid)
+            due=next_raid_time(p)
+            if due is None or not 0<due-now<=1800 or not notification_enabled(uid):continue
+            # Only remind if the previous wave has been processed, avoiding false alerts on backlog.
+            if p.wave and p.last_wave_at<START+(p.wave-1)*1800-60:continue
+            key=f'raid_reminder:{uid}:{p.wave+1}'
+            if engine.db.execute('SELECT 1 FROM events WHERE id=?',(key,)).fetchone():continue
+            preview=engine.next_preview(uid)
+            # Claim reminder BEFORE the network request, preventing repeated DMs on errors/restarts.
+            engine.db.execute('INSERT INTO events VALUES (?,?)',(key,json.dumps({'at':now})))
+            candidates.append((uid,due,preview))
+    for uid,due,preview in candidates:
+        try:
+            user=client.get_user(int(uid)) or await client.fetch_user(int(uid))
+            await user.send(embed=discord.Embed(title='⚔️ Dungeon Master — Invasion Incoming!',description=f"Your next NPC invasion starts **<t:{int(due)}:R>**.\n\n**Wave {preview['wave']}** · {preview['enemy_type']} · Threat {preview['threat']}\n{preview['hint']}\n\nOpen `/play` in the server to prepare your dungeon. Your defence fights automatically, even if you are offline.",color=0x7d5fff))
+        except (discord.Forbidden,discord.HTTPException,ValueError) as ex:
+            logging.info('Could not deliver raid reminder to %s: %s',uid,ex)
+
+@raid_reminders.before_loop
+async def before_raid_reminders():await client.wait_until_ready()
+
+@tasks.loop(seconds=30)
 async def waves():
     now=time.time()
     if now<START:return
@@ -250,6 +315,7 @@ async def on_ready():
     row=engine.db.execute('SELECT data FROM events WHERE id=?',('event_start',)).fetchone()
     if row:START=json.loads(row[0])['start']
     if not waves.is_running():waves.start()
+    if not raid_reminders.is_running():raid_reminders.start()
     if not getattr(client,'_synced',False):
         if GUILD_ID:
             guild=discord.Object(id=int(GUILD_ID));client.tree.copy_global_to(guild=guild);await client.tree.sync(guild=guild)
