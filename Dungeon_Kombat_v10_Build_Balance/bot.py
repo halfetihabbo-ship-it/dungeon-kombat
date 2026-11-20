@@ -490,7 +490,7 @@ async def show_player(interaction, screen='home', action=None):
             s, notice = (game.mutate(db, interaction.user.id, interaction.user.display_name, action)
                          if action else game.refresh(db, interaction.user.id, interaction.user.display_name))
         s['_user_id']=interaction.user.id
-        await interaction.edit_original_response(embed=player_embed(s, notice, screen), view=ChamberView(s) if screen=='chamber' else InventoryView(s) if screen=='inventory' else GameView(screen))
+        await interaction.edit_original_response(content=None, embed=player_embed(s, notice, screen), view=ChamberView(s) if screen=='chamber' else InventoryView(s) if screen=='inventory' else GameView(screen))
         # The UI has already been updated. Notification errors must not
         # overwrite a successful panel with a misleading generic error.
         for notify in (notify_boss, notify_checkpoint, notify_chambers, notify_goblin, notify_portals):
@@ -500,15 +500,26 @@ async def show_player(interaction, screen='home', action=None):
                 logging.exception('Post-update notification failed: %s user=%s',
                                   notify.__name__, interaction.user.id)
     except ValueError as exc:
-        await send_private(interaction, content=f'⚠️ {exc}')
+        logging.warning('Game interaction rejected: screen=%s action=%s user=%s: %s',
+                        screen, action, interaction.user.id, exc)
+        try:
+            if interaction.response.is_done():
+                await interaction.followup.send(f'⚠️ {exc}', ephemeral=True)
+            else:
+                await interaction.response.send_message(f'⚠️ {exc}', ephemeral=True)
+        except discord.HTTPException:
+            logging.exception('Unable to deliver interaction warning')
     except Exception:
         logging.exception('Game interaction failed: screen=%s action=%s user=%s',
                           screen, action, interaction.user.id)
-        # Do not send a separate ephemeral error or erase a previously
-        # successful panel update. Errors are logged in Railway.
-        if not interaction.response.is_done():
-            await interaction.response.send_message(
-                '⚠️ Unable to load that menu. Please try /play again.', ephemeral=True)
+        try:
+            message='⚠️ Unable to load that menu. Please try **/play** again. If it continues, ask an administrator to check the Railway logs.'
+            if interaction.response.is_done():
+                await interaction.followup.send(message, ephemeral=True)
+            else:
+                await interaction.response.send_message(message, ephemeral=True)
+        except discord.HTTPException:
+            logging.exception('Unable to deliver interaction error')
 
 class NavButton(discord.ui.Button):
     def __init__(self, label, screen, *, emoji=None, action=None, style=discord.ButtonStyle.secondary):
@@ -923,7 +934,7 @@ async def wait_for_adventure_bot():
 async def setup_hook():
     if not send_adventure_digests.is_running():send_adventure_digests.start()
     for view in (JoinView(),ClassView(),GameView('home'),GameView('dungeon'),GameView('hero'),GameView('kingdom'),GameView('activities_menu'),GameView('info'),GameView('smith'),GameView('activities'),
-                 GameView('journal'),GameView('boss'),GameView('arena'),GameView('pets'),GameView('skills'),GameView('merchant'),GameView('wheel'),GameView('quests'),GameView('enchant'),HelpView(),RankingsView()):
+                 GameView('journal'),GameView('boss'),GameView('arena'),GameView('pets'),GameView('skills'),GameView('merchant'),GameView('wheel'),GameView('quests'),GameView('enchant'),GameView('expedition'),GameView('checkpoint'),GameView('build'),GameView('inventory'),GameView('goblin'),GameView('portal'),GameView('camp'),GameView('relics'),GameView('chamber'),HelpView(),RankingsView()):
         bot.add_view(view)
     if GUILD_ID:
         guild=discord.Object(id=int(GUILD_ID))
