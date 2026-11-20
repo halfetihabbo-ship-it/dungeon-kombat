@@ -82,13 +82,13 @@ def help_embed():
         '**2️⃣ CLIMB AUTOMATICALLY** — Battles process every **15 seconds** when progress is checked; up to **8 hours** of offline progress.\n'
         '**3️⃣ RETURN & GROW STRONGER** — Press **🔄 Refresh**, claim rewards, upgrade gear and fight bosses.\n'
         '⚔️ **Better weapons and armour auto-equip by default.** To adjust your build, go to **/play → 🧙 Hero → 🎒 Inventory** to compare gear, equip manually, lock favourites or turn Auto-Equip OFF.\n\n'
-        '## 🧭 THE SIX HOME BUTTONS\n'
+        '## 🧭 HOME NAVIGATION\n'
         '🔄 **Refresh** — Process idle battles and see your latest rewards.\n'
         '🏰 **Dungeon** — Boss Battle, Treasure Goblin, Mystery Chambers and Abyss Portals.\n'
         '🧙 **Hero** — Inventory, Enchanting, Relic Collection, Companions and Skill Tree.\n'
         '🏰 **Kingdom** — Blacksmith, Adventurer Camp and Travelling Merchant.\n'
         '🎯 **Activities** — Wheel of Fortune, Quest Board, Daily Bounty, Gauntlet, Arena Trials and Treasure Vault.\n'
-        '📖 **Info** — Help, Leaderboard and Adventurer Log (12-hour progress reports).\n\n'
+        '📖 **Info** — Leaderboard and Adventurer Log (12-hour progress reports).\n📘 **Help** — Open this complete guide directly from Home.\n\n'
         '## 🏰 DUNGEON DISCOVERIES\n'
         '🐉 **Boss Battle** — Legendary boss every 50 floors. Receive a one-time DM when a new boss checkpoint is discovered on check-in. Use Attack, Guard, Power Strike or Second Wind.\n'
         '👹 **Treasure Goblin** — Personal clue challenge every six hours, with two attempts; DM alert on check-in.\n'
@@ -113,7 +113,7 @@ def help_embed():
         '⏳ Offline battles are capped at **8 hours** per progress calculation, including scheduled reports.\n\n'
         '## 💡 TIPS\n'
         '💰 Stuck? Your hero farms resources and heals. Every ten floors grants a milestone chest.\n'
-        '🏠 **Home** returns to the six-button hub; **⬅️ Back** returns to the previous category.\n'
+        '🏠 **Home** returns to the main hub; **⬅️ Back** returns to the previous category.\n'
         '🏆 Highest floor after seven days wins; ties go to whoever reached it first.'
     ),color=PURPLE)
     e.add_field(name='🎁 PRIZES',value=prize_text(),inline=False)
@@ -173,7 +173,7 @@ def player_embed(s, notice='', screen='home'):
                     value=(f'⚔️ **{s["weapon"]["name"]}**  +{s["weapon"]["plus"]} · R{s["weapon"]["refine"]}\n'
                            f'🛡️ **{s["armour"]["name"]}**  +{s["armour"]["plus"]} · R{s["armour"]["refine"]}'), inline=False)
         e.add_field(name='🚀 QUICK NAVIGATION',
-                    value='**🔄 Refresh** — Collect idle progress.\n**🏰 Dungeon** — Bosses, Goblins, Chambers & Portals.\n**🧙 Hero** — Inventory, Enchanting, Relics, Pets & Skills.\n**🏰 Kingdom** — Blacksmith, Camp & Merchant.\n**🎯 Activities** — Wheel, Quests, Arena & Bounty.\n**📖 Info** — Help, Leaderboard & Adventurer Log.',inline=False)
+                    value='**🔄 Refresh** — Collect idle progress.\n**🏰 Dungeon** — Bosses, Goblins, Chambers & Portals.\n**🧙 Hero** — Inventory, Enchanting, Relics, Pets & Skills.\n**🏰 Kingdom** — Blacksmith, Camp & Merchant.\n**🎯 Activities** — Wheel, Quests, Arena & Bounty.\n**📖 Info** — Leaderboard & Adventurer Log.\n**📘 Help** — Open the complete game guide instantly.',inline=False)
         e.add_field(name='📜 LATEST ADVENTURE REPORT', value=(notice or s.get('last_report') or 'Your journey begins!')[:1024], inline=False)
     elif screen=='journal':
         with game.open_db() as db:
@@ -467,7 +467,8 @@ class GameView(discord.ui.View):
                      ('Hero','hero','🧙',None,discord.ButtonStyle.primary),
                      ('Kingdom','kingdom','🏰',None,discord.ButtonStyle.primary),
                      ('Activities','activities_menu','🎯',None,discord.ButtonStyle.primary),
-                     ('Info','info','📖',None,discord.ButtonStyle.secondary)]
+                     ('Info','info','📖',None,discord.ButtonStyle.secondary),
+                     ('Help','help','📘',None,discord.ButtonStyle.success)]
         elif screen=='dungeon':
             buttons=[('Refresh','home','🔄',None,discord.ButtonStyle.success),
                      ('Boss Battle','boss','🐉',None,discord.ButtonStyle.danger),
