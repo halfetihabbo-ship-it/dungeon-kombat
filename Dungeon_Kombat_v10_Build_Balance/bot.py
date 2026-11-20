@@ -4,7 +4,7 @@ import time
 import os
 import discord
 from discord import app_commands
-from discord.ext import commands
+from discord.ext import commands, tasks
 import game
 
 logging.basicConfig(level=logging.INFO)
@@ -88,7 +88,7 @@ def help_embed():
         '🧙 **Hero** — Inventory, Enchanting, Relic Collection, Companions and Skill Tree.\n'
         '🏰 **Kingdom** — Blacksmith, Adventurer Camp and Travelling Merchant.\n'
         '🎯 **Activities** — Wheel of Fortune, Quest Board, Daily Bounty, Gauntlet, Arena Trials and Treasure Vault.\n'
-        '📖 **Info** — This Help guide and the Leaderboard.\n\n'
+        '📖 **Info** — Help, Leaderboard and Adventurer Log (12-hour progress reports).\n\n'
         '## 🏰 DUNGEON DISCOVERIES\n'
         '🐉 **Boss Battle** — Legendary boss every 50 floors. Receive a one-time DM when a new boss checkpoint is discovered on check-in. Use Attack, Guard, Power Strike or Second Wind.\n'
         '👹 **Treasure Goblin** — Personal clue challenge every six hours, with two attempts; DM alert on check-in.\n'
@@ -107,6 +107,10 @@ def help_embed():
         '🎡 **Wheel** — One spin every six hours.\n'
         '📜 **Quest Board** — Three daily objectives unlock a bonus chest.\n'
         '🎯 **Activities** — Claim Daily Bounty, play Gauntlet, use three daily Arena attempts and spend Vault Keys.\n\n'
+        '## 📖 ADVENTURER LOG\n'
+        'Open **/play → 📖 Info → Adventurer Log** to see your current stats and progress since the last report.\n'
+        '📩 A private progress summary is sent every **12 hours** while the event is active. DMs must be enabled.\n'
+        '⏳ Offline battles are capped at **8 hours** per progress calculation, including scheduled reports.\n\n'
         '## 💡 TIPS\n'
         '💰 Stuck? Your hero farms resources and heals. Every ten floors grants a milestone chest.\n'
         '🏠 **Home** returns to the six-button hub; **⬅️ Back** returns to the previous category.\n'
@@ -127,12 +131,35 @@ SCREEN_PARENT = {
     'boss':'dungeon','goblin':'dungeon','chamber':'dungeon','portal':'dungeon',
     'inventory':'hero','enchant':'hero','relics':'hero','pets':'hero','skills':'hero',
     'smith':'kingdom','camp':'kingdom','merchant':'kingdom',
+    'journal':'info',
     'activities':'activities_menu','arena':'activities_menu','wheel':'activities_menu','quests':'activities_menu',
 }
 
+def journal_delta_text(report):
+    d=report['delta']
+    sign=lambda n: f'{n:+,}'
+    return (f'🏰 Floors progressed: **{sign(d["floor"])}**\n'
+            f'⭐ Levels gained: **{sign(d["level"])}**\n'
+            f'✨ XP earned: **{sign(d["xp_total"])}**\n'
+            f'⚔️ Battles won: **{d["wins"]:,}** · Lost: **{d["fails"]:,}**\n'
+            f'🪙 Gold change: **{sign(d["gold"])}** · 🧱 Materials change: **{sign(d["materials"])}**\n'
+            f'🗝️ Keys change: **{sign(d["keys"])}** · 🎡 Wheel spins: **{d["wheel_spins"]:,}**\n'
+            f'🏟️ Arena wins: **{d["arena_wins"]:,}**\n'
+            f'🕒 Tracking since <t:{int(report["since"])}:F>')
+
+def journal_dm_embed(s,report):
+    e=discord.Embed(title='📖 ABYSS ASCENSION — 12-HOUR ADVENTURER LOG',
+                    description='Your latest adventure progress!\n\n'+journal_delta_text(report),color=PURPLE)
+    e.add_field(name='🧙 CURRENT HERO',value=(
+        f'**{s["class"]}** · ⭐ Level **{s["level"]:,}** · 🏰 Floor **{s["floor"]:,}**\n'
+        f'❤️ **{s["hp"]:,}/{game.max_hp(s):,} HP** · ⚔️ **{game.attack_power(s):.0f} ATK** · 🛡️ **{game.defense_power(s):.0f} DEF**\n'
+        f'🪙 **{s["gold"]:,} gold** · 🧱 **{s["materials"]:,} materials**'),inline=False)
+    e.set_footer(text='Open /play → 📖 Info → Adventurer Log for your latest stats')
+    return e
+
 def player_embed(s, notice='', screen='home'):
     titles = {'home': '🏰⚔️ YOUR DUNGEON ADVENTURE', 'smith': '⚒️🔥 THE ROYAL BLACKSMITH',
-              'activities': '🎯✨ QUESTS & TREASURE', 'wheel':'🎡✨ WHEEL OF FORTUNE', 'quests':'📜✨ DAILY QUEST BOARD', 'chamber': '🏰✨ MYSTERY CHAMBER', 'arena':'🏟️⚔️ ARENA TRIALS', 'pets':'🐾✨ COMPANIONS', 'skills':'🌳✨ SKILL TREE', 'merchant':'🧙🛒 TRAVELLING MERCHANT', 'goblin':'👹💰 TREASURE GOBLIN', 'boss': '🐉🔥 LEGENDARY BOSS', 'inventory':'🎒⚔️ HERO INVENTORY', 'enchant':'✨ WEAPON ENCHANTING', **{key: value[0] for key, value in CATEGORY_SCREENS.items()}}
+              'activities': '🎯✨ QUESTS & TREASURE', 'wheel':'🎡✨ WHEEL OF FORTUNE', 'quests':'📜✨ DAILY QUEST BOARD', 'chamber': '🏰✨ MYSTERY CHAMBER', 'arena':'🏟️⚔️ ARENA TRIALS', 'pets':'🐾✨ COMPANIONS', 'skills':'🌳✨ SKILL TREE', 'merchant':'🧙🛒 TRAVELLING MERCHANT', 'journal':'📖 ADVENTURER LOG', 'goblin':'👹💰 TREASURE GOBLIN', 'boss': '🐉🔥 LEGENDARY BOSS', 'inventory':'🎒⚔️ HERO INVENTORY', 'enchant':'✨ WEAPON ENCHANTING', **{key: value[0] for key, value in CATEGORY_SCREENS.items()}}
     e = discord.Embed(title=titles.get(screen, titles['home']), description=stats(s), color=GOLD if screen=='home' else PURPLE)
     if screen=='home':
         if s.get('chambers'):
@@ -146,8 +173,18 @@ def player_embed(s, notice='', screen='home'):
                     value=(f'⚔️ **{s["weapon"]["name"]}**  +{s["weapon"]["plus"]} · R{s["weapon"]["refine"]}\n'
                            f'🛡️ **{s["armour"]["name"]}**  +{s["armour"]["plus"]} · R{s["armour"]["refine"]}'), inline=False)
         e.add_field(name='🚀 QUICK NAVIGATION',
-                    value='**🔄 Refresh** — Collect idle progress.\n**🏰 Dungeon** — Bosses, Goblins, Chambers & Portals.\n**🧙 Hero** — Inventory, Enchanting, Relics, Pets & Skills.\n**🏰 Kingdom** — Blacksmith, Camp & Merchant.\n**🎯 Activities** — Wheel, Quests, Arena & Bounty.\n**📖 Info** — Help & Leaderboard.',inline=False)
+                    value='**🔄 Refresh** — Collect idle progress.\n**🏰 Dungeon** — Bosses, Goblins, Chambers & Portals.\n**🧙 Hero** — Inventory, Enchanting, Relics, Pets & Skills.\n**🏰 Kingdom** — Blacksmith, Camp & Merchant.\n**🎯 Activities** — Wheel, Quests, Arena & Bounty.\n**📖 Info** — Help, Leaderboard & Adventurer Log.',inline=False)
         e.add_field(name='📜 LATEST ADVENTURE REPORT', value=(notice or s.get('last_report') or 'Your journey begins!')[:1024], inline=False)
+    elif screen=='journal':
+        with game.open_db() as db:
+            report=game.journal_stats(db, s['_user_id'])
+        if report:
+            e.add_field(name='📊 PROGRESS SINCE LAST REPORT',value=journal_delta_text(report),inline=False)
+            e.add_field(name='⚔️ CURRENT COMBAT STATS',value=(f'❤️ HP: **{s["hp"]:,}/{game.max_hp(s):,}**\n'
+                         f'⚔️ Attack: **{game.attack_power(s):.0f}** · 🛡️ Defence: **{game.defense_power(s):.0f}**\n'
+                         f'🏰 Floor: **{s["floor"]:,}** · ⭐ Level: **{s["level"]:,}**\n'
+                         f'🏆 Lifetime victories: **{s.get("wins",0):,}** · Defeats: **{s.get("fails",0):,}**'),inline=False)
+            e.add_field(name='📩 NEXT REPORT',value=f'<t:{int(report["next_due"])}:R> (Discord DM)',inline=False)
     elif screen in CATEGORY_SCREENS:
         e.add_field(name='🧭 SELECT A DESTINATION', value=CATEGORY_SCREENS[screen][1], inline=False)
     elif screen=='inventory':
@@ -387,6 +424,7 @@ async def show_player(interaction, screen='home', action=None):
                 return await send_private(interaction, embed=help_embed(), view=JoinView())
             s, notice = (game.mutate(db, interaction.user.id, interaction.user.display_name, action)
                          if action else game.refresh(db, interaction.user.id, interaction.user.display_name))
+        s['_user_id']=interaction.user.id
         await interaction.edit_original_response(embed=player_embed(s, notice, screen), view=ChamberView(s) if screen=='chamber' else InventoryView(s) if screen=='inventory' else GameView(screen))
         # The UI has already been updated. Notification errors must not
         # overwrite a successful panel with a misleading generic error.
@@ -452,8 +490,10 @@ class GameView(discord.ui.View):
                      ('Bounty & Vault','activities','🎯',None,discord.ButtonStyle.primary),
                      ('Arena Trials','arena','⚔️',None,discord.ButtonStyle.primary)]
         elif screen=='info':
-            buttons=[('Help','help','📖',None,discord.ButtonStyle.primary),
+            buttons=[('Adventurer Log','journal','📖',None,discord.ButtonStyle.success),('Help','help','📖',None,discord.ButtonStyle.primary),
                      ('Leaderboard','rankings','🏆',None,discord.ButtonStyle.primary)]
+        elif screen=='journal':
+            buttons=[('Back','info','⬅️',None,discord.ButtonStyle.secondary),('Home','home','🏠',None,discord.ButtonStyle.secondary)]
         elif screen=='inventory':
             buttons=[('Auto-Equip ON/OFF','inventory','🤖','gear_auto',discord.ButtonStyle.primary),
                      ('Back','home','⬅️',None,discord.ButtonStyle.secondary)]
@@ -693,6 +733,7 @@ async def play(interaction:discord.Interaction,panel:bool=False):
         s=game.get_player(db,interaction.user.id)
     if s:
         with game.open_db() as db:s,notice=game.refresh(db,interaction.user.id,interaction.user.display_name)
+        s['_user_id']=interaction.user.id
         await send_private(interaction,embed=player_embed(s,notice),view=GameView())
         await notify_boss(interaction.user,s)
         await notify_chambers(interaction.user,s)
@@ -703,10 +744,45 @@ async def play(interaction:discord.Interaction,panel:bool=False):
             title='🏰⚔️ WELCOME TO ABYSS ASCENSION!',
             description='## 🚀 CREATE YOUR HERO!\nSelect your class below and start your seven-day adventure.\n\n📖 New player? Tap **Read Quick Start** for an easy guide.',color=GOLD),view=ClassView())
 
+@tasks.loop(minutes=5)
+async def send_adventure_digests():
+    now=game.utcnow()
+    try:
+        with game.open_db() as db:
+            start,end=game.event_window(db,now)
+            if start is None or now < start or (end is not None and now >= end):return
+            players=db.execute('SELECT user_id,username FROM players').fetchall()
+        for row in players:
+            uid=row['user_id']
+            try:
+                with game.open_db() as db:
+                    jr=game.journal_row(db,uid,now)
+                    if jr is None or now < jr['started_at']+game.JOURNAL_SECONDS or now-jr['last_attempt'] < game.JOURNAL_SECONDS:
+                        continue
+                    # Save the attempt before network I/O to prevent DM spam on failures.
+                    game.journal_mark_attempt(db,uid,now)
+                    s,_=game.refresh(db,uid,row['username'],now)
+                    report=game.journal_stats(db,uid,s,now)
+                user=bot.get_user(uid) or await bot.fetch_user(uid)
+                await user.send(embed=journal_dm_embed(s,report))
+                with game.open_db() as db:
+                    game.journal_mark_sent(db,uid,s,now)
+            except (discord.Forbidden,discord.HTTPException):
+                logging.info('Adventurer log DM unavailable for user %s',uid)
+            except Exception:
+                logging.exception('Adventurer log delivery failed for user %s',uid)
+    except Exception:
+        logging.exception('Adventurer log scheduler failed')
+
+@send_adventure_digests.before_loop
+async def wait_for_adventure_bot():
+    await bot.wait_until_ready()
+
 @bot.event
 async def setup_hook():
+    if not send_adventure_digests.is_running():send_adventure_digests.start()
     for view in (JoinView(),ClassView(),GameView('home'),GameView('dungeon'),GameView('hero'),GameView('kingdom'),GameView('activities_menu'),GameView('info'),GameView('smith'),GameView('activities'),
-                 GameView('boss'),GameView('arena'),GameView('pets'),GameView('skills'),GameView('merchant'),GameView('wheel'),GameView('quests'),GameView('enchant'),HelpView(),RankingsView()):
+                 GameView('journal'),GameView('boss'),GameView('arena'),GameView('pets'),GameView('skills'),GameView('merchant'),GameView('wheel'),GameView('quests'),GameView('enchant'),HelpView(),RankingsView()):
         bot.add_view(view)
     if GUILD_ID:
         guild=discord.Object(id=int(GUILD_ID))
