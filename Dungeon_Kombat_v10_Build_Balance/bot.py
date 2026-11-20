@@ -808,6 +808,58 @@ class JoinView(discord.ui.View):
         self.add_item(NavButton('HOW TO PLAY','help',emoji='📖',style=discord.ButtonStyle.primary))
         self.add_item(NavButton('VIEW PRIZES & LEADERBOARD','rankings',emoji='🏆'))
 
+class ResetGameConfirmView(discord.ui.View):
+    def __init__(self, owner_id: int):
+        super().__init__(timeout=60)
+        self.owner_id = owner_id
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.owner_id or not interaction.guild or not interaction.user.guild_permissions.manage_guild:
+            await interaction.response.send_message('🔒 Only the administrator who requested this reset can confirm it.', ephemeral=True)
+            return False
+        return True
+
+    @discord.ui.button(label='Confirm full reset', style=discord.ButtonStyle.danger, emoji='🗑️')
+    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer(ephemeral=True)
+        try:
+            with game.open_db() as db:
+                removed = game.reset_entire_game(db)
+        except Exception:
+            logging.exception('Full game reset failed')
+            await interaction.edit_original_response(content='⚠️ Reset failed. Check Railway logs; no reset success was confirmed.', view=None)
+            return
+        logging.warning('Full Abyss Ascension reset by admin %s; %s player saves removed', interaction.user.id, removed)
+        await interaction.edit_original_response(content=(
+            f'✅ **Abyss Ascension has been reset.** Removed **{removed}** player saves, leaderboard entries and journal records. '
+            'The seven-day countdown will restart when the next player joins, unless `EVENT_START_UTC` is set.'), view=None)
+        self.stop()
+
+    @discord.ui.button(label='Cancel', style=discord.ButtonStyle.secondary, emoji='✖️')
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.edit_message(content='Reset cancelled. No data was changed.', view=None)
+        self.stop()
+
+
+@bot.tree.command(name='resetgame', description='ADMIN ONLY: erase all game progress and restart the event')
+@app_commands.guild_only()
+@app_commands.default_permissions(manage_guild=True)
+async def resetgame(interaction: discord.Interaction):
+    if not interaction.guild or not isinstance(interaction.user, discord.Member) or not interaction.user.guild_permissions.manage_guild:
+        await interaction.response.send_message('🔒 Manage Server permission is required.', ephemeral=True)
+        return
+    with game.open_db() as db:
+        player_count = db.execute('SELECT COUNT(*) FROM players').fetchone()[0]
+    await interaction.response.send_message(
+        '⚠️ **FULL GAME RESET — IRREVERSIBLE**\n\n'
+        f'This will permanently erase **{player_count}** player saves, all inventory, floors, levels, '
+        'leaderboard progress and Adventurer Log history. It also clears the database event start, '
+        'so the seven-day countdown begins again when the next player joins.\n\n'
+        '**This does not remove a configured `EVENT_START_UTC` environment variable.**\n\n'
+        'Confirm below within 60 seconds, or cancel.',
+        view=ResetGameConfirmView(interaction.user.id), ephemeral=True)
+
+
 @bot.tree.command(name='play',description='Play Abyss Ascension or publish the public join panel')
 @app_commands.describe(panel='Publish the large public join panel (server administrators only)')
 async def play(interaction:discord.Interaction,panel:bool=False):
