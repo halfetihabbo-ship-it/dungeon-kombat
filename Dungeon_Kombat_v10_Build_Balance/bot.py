@@ -479,6 +479,24 @@ async def notify_portals(user, state):
     except (discord.Forbidden,discord.HTTPException):
         logging.info('Could not DM portal notification to %s',user.id)
 
+async def show_ui_notice(interaction, message, *, error=False):
+    """Show action feedback in the existing Discord panel, not a new reply."""
+    if interaction.type == discord.InteractionType.component:
+        source = interaction.message
+        current = source.embeds[0].copy() if source and source.embeds else discord.Embed(title='⚔️ Abyss Ascension', color=GOLD)
+        # Replace the previous status so repeated errors do not fill the embed.
+        
+        for i in reversed(range(len(current.fields))):
+            if current.fields[i].name in ('⚠️ ACTION NOTICE', '📣 ACTION NOTICE'):
+                current.remove_field(i)
+        current.add_field(name='⚠️ ACTION NOTICE' if error else '📣 ACTION NOTICE', value=str(message)[:1024], inline=False)
+        if interaction.response.is_done():
+            await interaction.edit_original_response(content=None, embed=current)
+        else:
+            await interaction.response.edit_message(content=None, embed=current)
+    else:
+        await send_private(interaction, content=str(message))
+
 async def show_player(interaction, screen='home', action=None):
     try:
         # Component defer (thinking=False) acknowledges the button and edits
@@ -503,23 +521,16 @@ async def show_player(interaction, screen='home', action=None):
         logging.warning('Game interaction rejected: screen=%s action=%s user=%s: %s',
                         screen, action, interaction.user.id, exc)
         try:
-            if interaction.response.is_done():
-                await interaction.followup.send(f'⚠️ {exc}', ephemeral=True)
-            else:
-                await interaction.response.send_message(f'⚠️ {exc}', ephemeral=True)
+            await show_ui_notice(interaction, f'⚠️ {exc}', error=True)
         except discord.HTTPException:
-            logging.exception('Unable to deliver interaction warning')
+            logging.exception('Unable to update panel with action warning')
     except Exception:
         logging.exception('Game interaction failed: screen=%s action=%s user=%s',
                           screen, action, interaction.user.id)
         try:
-            message='⚠️ Unable to load that menu. Please try **/play** again. If it continues, ask an administrator to check the Railway logs.'
-            if interaction.response.is_done():
-                await interaction.followup.send(message, ephemeral=True)
-            else:
-                await interaction.response.send_message(message, ephemeral=True)
+            await show_ui_notice(interaction, 'Unable to load that menu. Please try again or contact an administrator.', error=True)
         except discord.HTTPException:
-            logging.exception('Unable to deliver interaction error')
+            logging.exception('Unable to update panel with menu error')
 
 class NavButton(discord.ui.Button):
     def __init__(self, label, screen, *, emoji=None, action=None, style=discord.ButtonStyle.secondary, button_key=None):
@@ -791,10 +802,10 @@ class HeroSelect(discord.ui.Select):
             await assign_role(interaction)
             await interaction.response.edit_message(embed=player_embed(s,'🎉 Hero created! Welcome to the dungeon.'),view=GameView())
         except ValueError as exc:
-            await send_private(interaction,content=f'⚠️ {exc}')
+            await show_ui_notice(interaction, f'⚠️ {exc}', error=True)
         except Exception:
             logging.exception('Character creation failed')
-            await send_private(interaction,content='⚠️ Could not create hero. Please try again.')
+            await show_ui_notice(interaction, 'Could not create hero. Please try again.', error=True)
 
 class ClassView(discord.ui.View):
     def __init__(self):
