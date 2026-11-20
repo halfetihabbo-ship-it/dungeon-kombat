@@ -51,9 +51,9 @@ def display(p):
     # Five starter rooms are intentionally granted at registration. The level-based
     # capacity is for EXTRA rooms, not a limit retroactively applied to starter rooms.
     built=len(p.rooms)
-    unlocked=min(MAX_ROOMS,p.capacity())
+    unlocked=max(built,min(MAX_ROOMS,p.capacity()))
     next_unlock=ROOM_UNLOCK_LEVELS[built] if built<MAX_ROOMS else None
-    room_status=f'{built}/{MAX_ROOMS} rooms built · {unlocked} slots unlocked'
+    room_status=f'{built}/{MAX_ROOMS} rooms built · {unlocked} room slots available'
     if next_unlock and p.level()<next_unlock:room_status+=f' · Next room unlocks at Lv{next_unlock}'
     elif next_unlock:room_status+=' · You can build another room now!'
     e.add_field(name='🏗️ Your defences',value=f'**{built} rooms** • {p.style} build • ⚡ Power **{p.power():.0f}**\n{room_status}',inline=False)
