@@ -7,7 +7,7 @@ from pathlib import Path
 import discord
 from discord import app_commands
 from discord.ext import commands, tasks
-from dungeon_master_engine import Engine, Room, MONSTERS, TRAPS, PVP_SECONDS, MAX_ROOMS, ROOM_UNLOCK_LEVELS
+from dungeon_master_engine import Engine, Room, MONSTERS, TRAPS, PATTERNS, PVP_SECONDS, MAX_ROOMS, ROOM_UNLOCK_LEVELS
 
 logging.basicConfig(level=logging.INFO)
 TOKEN=os.environ['DISCORD_TOKEN']
@@ -52,10 +52,10 @@ def display(p):
     # capacity is for EXTRA rooms, not a limit retroactively applied to starter rooms.
     built=len(p.rooms)
     unlocked=min(MAX_ROOMS,p.capacity())
-    next_unlock=next((lv for lv in ROOM_UNLOCK_LEVELS if lv>p.level() and ROOM_UNLOCK_LEVELS.index(lv)+1>built),None)
-    room_status=f'{built} rooms built · {unlocked} level-unlocked slots'
-    if built>unlocked:room_status+=' (starter rooms retained)'
-    if next_unlock:room_status+=f' · Next additional slot: Lv{next_unlock}'
+    next_unlock=ROOM_UNLOCK_LEVELS[built] if built<MAX_ROOMS else None
+    room_status=f'{built}/{MAX_ROOMS} rooms built · {unlocked} slots unlocked'
+    if next_unlock and p.level()<next_unlock:room_status+=f' · Next room unlocks at Lv{next_unlock}'
+    elif next_unlock:room_status+=' · You can build another room now!'
     e.add_field(name='🏗️ Your defences',value=f'**{built} rooms** • {p.style} build • ⚡ Power **{p.power():.0f}**\n{room_status}',inline=False)
     e.add_field(name='🛡️ Invasions survived',value=f'**{p.wave}/336** waves',inline=True)
     if p.wave<336:
@@ -68,7 +68,7 @@ def help_embed(section='overview'):
     e=discord.Embed(title='📖 Dungeon Master — Guide',color=0x7d5fff)
     pages={
       'overview':('Welcome to Dungeon Master','Build and defend a dungeon during a **seven-day competition**. NPC invasions occur every **30 minutes**, even while you are offline. Earn leaderboard points and finish in the top three.\n\n**Getting started**\n1. Use `/play` to open your private dashboard.\n2. Add rooms and configure monsters/traps.\n3. Upgrade and arrange rooms to counter the next invasion.\n4. Claim missions, raid fortresses and challenge other players.\n\n**Tip:** The dashboard shows the next raid time. Use **Raid Alerts** to turn 30-minute DM reminders on or off. Discord privacy settings may block DMs.'),
-      'building':('Building & upgrades','Use **Dungeon** → **Add Room** to expand. Select a room from **Dungeon** → **Upgrade Rooms** to improve its monster, trap or room structure.\n\nUse `/configure` to change a room’s monster or trap, and `/reorder` to swap defensive positions. `/rooms` displays the current order.\n\n**Limits:** 15 rooms, monster Lv30, trap Lv20, room Lv15, dungeon master Lv75. Deployment budgets and stacking restrictions prevent excessive combinations.'),
+      'building':('Building & upgrades','Use **Build & Upgrade** → **Change Build** to choose **Balanced, Swarm, Fortress, Curse or Dragon**. Your gold, XP, room levels, monster levels and trap levels are preserved. The monsters and traps in your rooms are replaced to match your chosen style.\n\nUse **Dungeon** → **Add Room** to expand. Select a room from **Dungeon** → **Upgrade Rooms** to improve its monster, trap or room structure.\n\nUse `/configure` to change a room’s monster or trap, and `/reorder` to swap defensive positions. `/rooms` displays the current order.\n\n**Room slots:** Everyone starts with five rooms; the sixth unlocks at **Level 4**, then more slots unlock as you progress.\n\n**Limits:** 15 rooms, monster Lv30, trap Lv20, room Lv15, dungeon master Lv75. Deployment budgets and stacking restrictions prevent excessive combinations.'),
       'combat':('NPC invasions & combat','An NPC invasion is scheduled every **30 minutes** for up to **336 waves** across seven days. Your dashboard previews the upcoming enemy and its threat. Prepare the right room order, monsters and traps.\n\nDefences are processed automatically, including when you are offline. The wave results award resources and leaderboard points according to performance.\n\n**Raid alerts:** The bot can DM you **30 minutes before** each upcoming NPC invasion. Toggle them using `/notifications` or **Raid Alerts** on the main menu. Keep DMs from server members enabled.'),
       'activities':('Raids, PvP & missions','**Fortress Raid:** Repeatable activity with a 20-minute cooldown. Up to 12 rewarded raids per day; leaderboard points from the first six successful raids.\n\n**PvP Raid:** Once every six hours, against an eligible opponent within approximately ±10% dungeon power. Recon identifies the defender’s style.\n\n**Daily Mission:** Defend at least two invasions that event day, then claim the daily reward.'),
       'scoring':('Leaderboard & event rules','Use `/leaderboard` to see the standings. NPC defences are the main source of leaderboard points. PvP and fortress activities provide additional opportunities.\n\nThe competition runs for seven days from the event start. Use `/winners` after the event to see the final top three.\n\n**Commands:** `/play`, `/help`, `/rooms`, `/configure`, `/reorder`, `/leaderboard`, `/winners`.'),
@@ -104,15 +104,17 @@ class Management(discord.ui.View):
             else:
                 buttons=[('Monster +','monster',0),('Trap +','trap',0),('Room +','room',0),('Change Room','change_room',1),('Back to Dungeon','dungeon',1),('Help','help',2)]
         elif mode=='dungeon':
-            buttons=[('Upgrade Rooms','room_menu',0),('Add Room','add',0),('Room Order','order',1),('Back','main',2),('Help','help',2)]
+            buttons=[('⬆️ Upgrade Rooms','room_menu',0),('➕ Add Room','add',0),('🎭 Change Build','builds',1),('📋 Room Order','order',1),('⬅️ Back','main',2),('📖 Help','help',2)]
+        elif mode=='builds':
+            buttons=[('⚖️ Balanced','style:Balanced',0),('🐺 Swarm','style:Swarm',0),('🛡️ Fortress','style:Fortress',1),('🔮 Curse','style:Curse',1),('🐉 Dragon','style:Dragon',2),('⬅️ Back','dungeon',3)]
         elif mode=='activities':
             buttons=[('Fortress Raid','fortress',0),('PvP Raid','pvp',0),('Daily Mission','mission',1),('Back','main',2),('Help','help',2)]
         elif mode=='help':
             buttons=[('Overview','overview',0),('Building','building',0),('Combat','combat',1),('Activities','activities_help',1),('Scoring','scoring',2),('Back','main',3)]
         else:
-            buttons=[('🚀 Quick Start','quickstart',0),('🏰 Build & Upgrade','dungeon',0),('⚔️ Go Adventuring','activities',1),('🏆 My Progress','progress',1),('📖 Help','help',2),('🔔 Raid Alerts','alerts',2),('🔄 Refresh','refresh',3),('🚪 Exit','exit',3)]
+            buttons=[('🚀 QUICK START — PLAY HERE','quickstart',0),('🏰 Build & Upgrade','dungeon',1),('⚔️ Go Adventuring','activities',1),('🎭 Change Build','builds',2),('🏆 My Progress','progress',2),('📖 Help','help',3),('🔔 Raid Alerts','alerts',3),('🔄 Refresh','refresh',4),('🚪 Exit','exit',4)]
         for label,action,row in buttons:
-            style=discord.ButtonStyle.primary if action in ('dungeon','activities','room_menu') else discord.ButtonStyle.secondary
+            style=discord.ButtonStyle.primary if action in ('dungeon','activities','room_menu','quickstart','builds') else discord.ButtonStyle.secondary
             if action=='exit':style=discord.ButtonStyle.danger
             self.add_item(MenuButton(label,action,row,style))
     async def interaction_check(self,i):
@@ -124,8 +126,9 @@ class Management(discord.ui.View):
         view=Management(self.owner,mode,self.selected if selected is None else selected)
         p=get(self.owner)
         embed=help_embed() if mode=='help' else display(p)
-        if mode=='main':notice=notice or ('**🎯 YOUR NEXT MOVE**\n1️⃣ Tap **Build & Upgrade** to strengthen your rooms.\n2️⃣ Try **Go Adventuring** to earn extra rewards.\n3️⃣ Be ready for the next invasion '+next_raid_text(p)+'\n\n✨ Tap **Quick Start** for a guided walkthrough.')
-        if mode=='dungeon':notice=notice or '🏰 **Build your defence:** **Upgrade Rooms** lets you select one room and keep upgrading it. **Add Room** expands your dungeon when unlocked. Everyone starts with five rooms; the level-based slot counter can initially be lower than five, but your starter rooms remain usable. Additional rooms unlock once your slot count exceeds your existing room count. **Room Order** shows the sequence attackers face. Use `/configure` to swap monsters/traps and `/reorder` to swap positions.'
+        if mode=='main':notice=notice or ('**🚀 QUICK START — YOUR NEXT MOVE**\n1️⃣ Tap **Build & Upgrade** to strengthen your rooms.\n2️⃣ Try **Go Adventuring** to earn extra rewards.\n3️⃣ Be ready for the next invasion '+next_raid_text(p)+'\n\n✨ Tap **Quick Start** for a guided walkthrough.')
+        if mode=='builds':notice=notice or f'🎭 **Choose your build!** Current: **{p.style}**. Selecting a style replaces room monsters and traps but keeps all your upgrade levels, gold, XP and progress.\n\n⚖️ Balanced: versatile · 🐺 Swarm: numbers · 🛡️ Fortress: defence · 🔮 Curse: debuffs · 🐉 Dragon: powerful legendary.'
+        if mode=='dungeon':notice=notice or '🏰 **Build your defence:** **Upgrade Rooms** lets you select one room and keep upgrading it. **Add Room** expands your dungeon when unlocked. Everyone starts with five rooms; your sixth unlocks at Level 4. Use **Change Build** to switch your defence style without losing upgrades. **Room Order** shows the sequence attackers face. Use `/configure` to swap monsters/traps and `/reorder` to swap positions.'
         if mode=='room':
             if view.selected is not None and p and 0<=view.selected<len(p.rooms):
                 r=p.rooms[view.selected]
@@ -136,7 +139,7 @@ class Management(discord.ui.View):
         await i.edit_original_response(content=notice,embed=embed,view=view)
     async def handle(self,i,action):
         if action=='quickstart':
-            embed=discord.Embed(title='🚀 Your first 3 moves',description='**1️⃣ Strengthen a room**\nTap **Build & Upgrade** → **Upgrade Rooms** → select any room. Upgrade its monster, trap or walls. You stay in that room until you change it.\n\n**2️⃣ Earn extra rewards**\nOpen **Go Adventuring** → **Fortress Raid** for a chance to earn gold and XP.\n\n**3️⃣ Prepare for invasion**\nThe next NPC wave attacks automatically at the time on your dashboard. You have at least 30 minutes after joining to prepare.\n\n**🏆 Goal:** Earn the most points over seven days to finish in the top three!',color=0x57F287)
+            embed=discord.Embed(title='🚀 QUICK START — YOUR FIRST 3 MOVES',description='**1️⃣ Strengthen a room**\nTap **Build & Upgrade** → **Upgrade Rooms** → select any room. Upgrade its monster, trap or walls. You stay in that room until you change it.\n\n**🎭 Want a different build?**\nTap **Change Build** on the main menu and choose your style. Your upgrade levels and progress are preserved.\n\n**2️⃣ Earn extra rewards**\nOpen **Go Adventuring** → **Fortress Raid** for a chance to earn gold and XP.\n\n**3️⃣ Prepare for invasion**\nThe next NPC wave attacks automatically at the time on your dashboard. You have at least 30 minutes after joining to prepare.\n\n**🏆 Goal:** Earn the most points over seven days to finish in the top three!',color=0x57F287)
             return await i.edit_original_response(content='👇 **Ready?** Press **Build & Upgrade** to begin.',embed=embed,view=Management(self.owner,'main'))
         if action=='progress':
             p=get(self.owner)
@@ -150,13 +153,19 @@ class Management(discord.ui.View):
             return await self.render(i,'main',f"🔔 Raid DM reminders **{'enabled' if enabled else 'disabled'}**. {'A reminder is sent 30 minutes before the next invasion when Discord allows DMs.' if enabled else 'You will not receive raid reminder DMs.'}")
         if action=='change_room':
             return await self.render(i,'room',selected=-1)
-        if action in ('main','dungeon','activities','help','refresh','room_menu'):
+        if action in ('main','dungeon','activities','help','refresh','room_menu','builds'):
             mode={'room_menu':'room','refresh':self.mode}.get(action,action)
             return await self.render(i,mode,selected=-1 if action=='room_menu' else None)
         if action=='exit':return await i.edit_original_response(content='Dungeon menu closed. Use `/play` to reopen.',embed=None,view=None)
         if action in ('overview','building','combat','activities_help','scoring'):
             page='activities' if action=='activities_help' else action
             return await i.edit_original_response(content=None,embed=help_embed(page),view=Management(self.owner,'help'))
+        if action.startswith('style:'):
+            style=action.partition(':')[2]
+            async with lock:
+                try:changed=engine.change_style(self.owner,style)
+                except ValueError as ex:return await i.followup.send(str(ex),ephemeral=True)
+            return await self.render(i,'builds',f'🎭 **{style} selected!** Your existing upgrade levels and progress are preserved.' if changed else f'You are already using **{style}**.')
         if action=='order':
             p=get(self.owner)
             lines='\n'.join(f'{n}. {r.monster} Lv{r.monster_level} · {r.trap} Lv{r.trap_level} · Room Lv{r.level}' for n,r in enumerate(p.rooms,1))
