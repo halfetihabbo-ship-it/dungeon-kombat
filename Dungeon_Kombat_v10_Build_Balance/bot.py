@@ -9,6 +9,7 @@ from discord import app_commands
 from discord.ext import commands, tasks
 from dungeon_master_engine import Engine, Room, MONSTERS, TRAPS, PATTERNS, PVP_SECONDS, MAX_ROOMS, ROOM_UNLOCK_LEVELS
 
+RELEASE_VERSION="v19.2 — QUICK START TEXT + ROOM UNLOCK FIX"
 logging.basicConfig(level=logging.INFO)
 TOKEN=os.environ['DISCORD_TOKEN']
 DB_PATH=os.getenv('DB_PATH','dungeon_master.sqlite3')
@@ -51,17 +52,19 @@ def display(p):
     # Five starter rooms are intentionally granted at registration. The level-based
     # capacity is for EXTRA rooms, not a limit retroactively applied to starter rooms.
     built=len(p.rooms)
-    unlocked=max(built,min(MAX_ROOMS,p.capacity()))
+    available=max(built,min(MAX_ROOMS,p.capacity()))
     next_unlock=ROOM_UNLOCK_LEVELS[built] if built<MAX_ROOMS else None
-    room_status=f'{built}/{MAX_ROOMS} rooms built · {unlocked} room slots available'
-    if next_unlock and p.level()<next_unlock:room_status+=f' · Next room unlocks at Lv{next_unlock}'
-    elif next_unlock:room_status+=' · You can build another room now!'
+    room_status=f'{built}/{MAX_ROOMS} rooms built · {available} slots available'
+    if built==MAX_ROOMS:room_status+=' · Maximum rooms reached'
+    elif available>built:room_status+=' · You can build another room now!'
+    elif next_unlock is not None:room_status+=f' · Room {built+1} unlocks at Lv{next_unlock}'
+    e.add_field(name='🚀 **QUICK START — START HERE!**',value='**① BUILD** — Open **Build & Upgrade** to strengthen a room.\n**② EARN** — Open **Go Adventuring** for gold and XP.\n**③ DEFEND** — Prepare for the next automatic invasion.\n\n**👇 Tap Quick Start below for the full walkthrough.**',inline=False)
     e.add_field(name='🏗️ Your defences',value=f'**{built} rooms** • {p.style} build • ⚡ Power **{p.power():.0f}**\n{room_status}',inline=False)
     e.add_field(name='🛡️ Invasions survived',value=f'**{p.wave}/336** waves',inline=True)
     if p.wave<336:
         q=engine.next_preview(p.id)
         e.add_field(name='⏳ Prepare for your next battle',value=f"**{next_raid_text(p)}**\n**Wave {q['wave']}** · {q['enemy_type']} enemies\n💡 {q['hint']}\n🔔 Alerts {'ON' if notification_enabled(p.id) else 'OFF'}",inline=False)
-    e.set_footer(text='💡 New? Tap Quick Start. Upgrade a room before the next wave!')
+    e.set_footer(text=f'{RELEASE_VERSION} | New? Tap Quick Start.')
     return e
 
 def help_embed(section='overview'):
@@ -126,7 +129,7 @@ class Management(discord.ui.View):
         view=Management(self.owner,mode,self.selected if selected is None else selected)
         p=get(self.owner)
         embed=help_embed() if mode=='help' else display(p)
-        if mode=='main':notice=notice or ('**🚀 QUICK START — YOUR NEXT MOVE**\n1️⃣ Tap **Build & Upgrade** to strengthen your rooms.\n2️⃣ Try **Go Adventuring** to earn extra rewards.\n3️⃣ Be ready for the next invasion '+next_raid_text(p)+'\n\n✨ Tap **Quick Start** for a guided walkthrough.')
+        if mode=='main':notice=notice or ('# 🚀 QUICK START — YOUR NEXT MOVE\n**BUILD → EARN → DEFEND**\n\n**Next invasion:** '+next_raid_text(p)+'\n\n**👇 Tap Quick Start for the walkthrough.**')
         if mode=='builds':notice=notice or f'🎭 **Choose your build!** Current: **{p.style}**. Selecting a style replaces room monsters and traps but keeps all your upgrade levels, gold, XP and progress.\n\n⚖️ Balanced: versatile · 🐺 Swarm: numbers · 🛡️ Fortress: defence · 🔮 Curse: debuffs · 🐉 Dragon: powerful legendary.'
         if mode=='dungeon':notice=notice or '🏰 **Build your defence:** **Upgrade Rooms** lets you select one room and keep upgrading it. **Add Room** expands your dungeon when unlocked. Everyone starts with five rooms; your sixth unlocks at Level 4. Use **Change Build** to switch your defence style without losing upgrades. **Room Order** shows the sequence attackers face. Use `/configure` to swap monsters/traps and `/reorder` to swap positions.'
         if mode=='room':
@@ -235,6 +238,15 @@ async def play(i:discord.Interaction):
             engine.save(p)
             engine.db.execute('INSERT OR REPLACE INTO events VALUES (?,?)',(f'joined_at:{p.id}',json.dumps({'at':time.time()})))
     await i.followup.send(content='🎮 **Welcome to your dungeon!** Start with **🚀 Quick Start** or tap **🏰 Build & Upgrade**.\n\n🛡️ **Your next invasion:** '+next_raid_text(p),embed=display(p),view=Management(str(i.user.id)),ephemeral=True)
+
+@client.tree.command(name='version',description='Check which Dungeon Master version Railway is running')
+async def version_cmd(i:discord.Interaction):
+    await i.response.send_message(
+        f'**Dungeon Master {RELEASE_VERSION}**\n'
+        f'**Room 6 unlock:** Lv{ROOM_UNLOCK_LEVELS[5]}\n'
+        f'**Unlock schedule:** {ROOM_UNLOCK_LEVELS}\n'
+        f'**Engine module:** `{__import__("dungeon_master_engine").__file__}`',
+        ephemeral=True)
 
 @client.tree.command(name='notifications',description='Turn NPC invasion DM reminders on or off')
 @app_commands.describe(enabled='Receive a DM 30 minutes before each NPC invasion')
@@ -369,6 +381,7 @@ async def on_ready():
             guild=discord.Object(id=int(GUILD_ID));client.tree.copy_global_to(guild=guild);await client.tree.sync(guild=guild)
         else:await client.tree.sync()
         client._synced=True
+    logging.info('DUNGEON MASTER %s | engine=%s | unlocks=%s | file=%s',RELEASE_VERSION,__import__('dungeon_master_engine').__file__,ROOM_UNLOCK_LEVELS,__file__)
     logging.info('Ready as %s',client.user)
 
 client.run(TOKEN)

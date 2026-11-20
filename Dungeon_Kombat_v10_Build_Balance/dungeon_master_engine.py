@@ -19,7 +19,7 @@ MAX_ROOMS=15
 MONSTER_CAP=30
 TRAP_CAP=20
 ROOM_CAP=15
-ROOM_UNLOCK_LEVELS=[1,4,8,12,17,22,27,32,37,42,47,52,57,62,67]
+ROOM_UNLOCK_LEVELS=[1,1,1,1,1,4,8,12,17,22,27,32,42,52,62]
 COUNTER={'Cleave':'Swarm','Siege':'Fortress','Dispel':'Curse','Pierce':'Dragon'}
 PATTERNS={
  'Swarm':[('Goblin','Spike'),('Spider','Poison')],
@@ -78,6 +78,21 @@ class Engine:
   p=Player(id=pid,style=style,rooms=[Room(m,t) for m,t in PATTERNS[style][:5]])
   validate_layout(p.rooms)
   self.save(p);return p
+ def change_style(self,pid,style):
+  """Apply a style's room loadout without resetting purchased upgrade levels."""
+  p=self.load(pid)
+  if style not in PATTERNS:raise ValueError('Unknown build style')
+  if p.style==style:return False
+  pattern=PATTERNS[style]
+  new=[]
+  for idx,old in enumerate(p.rooms):
+   monster,trap=pattern[idx%len(pattern)]
+   # Only one legendary Dragon may be deployed in the dungeon.
+   if monster=='Dragon' and any(r.monster=='Dragon' for r in new):monster='Skeleton'
+   new.append(Room(monster,trap,old.monster_level,old.trap_level,old.level))
+  validate_layout(new)
+  p.rooms=new;p.style=style;self.save(p)
+  return True
  def upgrade_cost(self,kind,level):
   base={'monster':130,'trap':110,'room':200}[kind]
   exponent={'monster':1.65,'trap':1.8,'room':1.9}[kind]
