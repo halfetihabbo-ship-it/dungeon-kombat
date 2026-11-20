@@ -80,7 +80,8 @@ def help_embed():
         '## 🚀 QUICK START — 3 STEPS\n'
         '**1️⃣ CREATE YOUR HERO** — Berserker ⚔️, Guardian 🛡️ or Rogue 🗡️.\n'
         '**2️⃣ CLIMB AUTOMATICALLY** — Battles process every **15 seconds** when progress is checked; up to **8 hours** of offline progress.\n'
-        '**3️⃣ RETURN & GROW STRONGER** — Press **🔄 Refresh**, claim rewards, upgrade gear and fight bosses.\n\n'
+        '**3️⃣ RETURN & GROW STRONGER** — Press **🔄 Refresh**, claim rewards, upgrade gear and fight bosses.\n'
+        '⚔️ **Better weapons and armour auto-equip by default.** To adjust your build, go to **/play → 🧙 Hero → 🎒 Inventory** to compare gear, equip manually, lock favourites or turn Auto-Equip OFF.\n\n'
         '## 🧭 THE SIX HOME BUTTONS\n'
         '🔄 **Refresh** — Process idle battles and see your latest rewards.\n'
         '🏰 **Dungeon** — Boss Battle, Treasure Goblin, Mystery Chambers and Abyss Portals.\n'
@@ -94,7 +95,7 @@ def help_embed():
         '🏰 **Mystery Chambers** — Discover while climbing; choose an encounter reward. DM alert on check-in.\n'
         '🌀 **Abyss Portals** — Optional three-stage Blood, Golden or Mystic routes; DM alert on check-in.\n\n'
         '## 🧙 HERO & EQUIPMENT\n'
-        '🎒 **Inventory** — Up to 20 weapons and 20 armour pieces. Compare, equip, lock or dismantle; auto-equip is optional.\n'
+        '🎒 **Inventory & Auto-Equip** — Your hero automatically equips stronger weapons and armour as they drop (**ON by default**). Visit **/play → 🧙 Hero → 🎒 Inventory** to compare stats and perks, manually equip gear, lock favourites, dismantle unwanted items or toggle Auto-Equip OFF/ON. A higher Attack or Defence stat may not always suit your build.\n'
         '✨ **Enchanting** — Character-bound bonuses persist when weapons auto-switch; changing costs 1,200 gold + 15 materials.\n'
         '💍 **Relics** — Collect from portals and equip one permanent passive bonus.\n'
         '🐾 **Companions** — Unlock, equip and upgrade your companion.\n'
@@ -387,15 +388,24 @@ async def show_player(interaction, screen='home', action=None):
             s, notice = (game.mutate(db, interaction.user.id, interaction.user.display_name, action)
                          if action else game.refresh(db, interaction.user.id, interaction.user.display_name))
         await interaction.edit_original_response(embed=player_embed(s, notice, screen), view=ChamberView(s) if screen=='chamber' else InventoryView(s) if screen=='inventory' else GameView(screen))
-        await notify_boss(interaction.user, s)
-        await notify_chambers(interaction.user, s)
-        await notify_goblin(interaction.user, s)
-        await notify_portals(interaction.user, s)
+        # The UI has already been updated. Notification errors must not
+        # overwrite a successful panel with a misleading generic error.
+        for notify in (notify_boss, notify_chambers, notify_goblin, notify_portals):
+            try:
+                await notify(interaction.user, s)
+            except Exception:
+                logging.exception('Post-update notification failed: %s user=%s',
+                                  notify.__name__, interaction.user.id)
     except ValueError as exc:
         await send_private(interaction, content=f'⚠️ {exc}')
     except Exception:
-        logging.exception('Game interaction failed')
-        await send_private(interaction, content='⚠️ Something went wrong. Please try again.')
+        logging.exception('Game interaction failed: screen=%s action=%s user=%s',
+                          screen, action, interaction.user.id)
+        # Do not send a separate ephemeral error or erase a previously
+        # successful panel update. Errors are logged in Railway.
+        if not interaction.response.is_done():
+            await interaction.response.send_message(
+                '⚠️ Unable to load that menu. Please try /play again.', ephemeral=True)
 
 class NavButton(discord.ui.Button):
     def __init__(self, label, screen, *, emoji=None, action=None, style=discord.ButtonStyle.secondary):
