@@ -79,18 +79,23 @@ def help_embed():
     e = discord.Embed(title='📖⚔️ ABYSS ASCENSION — HELP & QUICK START', description=(
         '## 🚀 QUICK START — 3 STEPS\n'
         '**1️⃣ CREATE YOUR HERO** — Berserker ⚔️, Guardian 🛡️ or Rogue 🗡️.\n'
-        '**2️⃣ CLIMB AUTOMATICALLY** — Battles process every **15 seconds** when progress is checked; up to **8 hours** of offline progress.\n'
+        '**2️⃣ CLIMB & PLAY** — Passive battles process every **45 seconds** (up to **8 hours** offline), but grant less XP. Expeditions and trials give meaningful active progress.\n'
         '**3️⃣ RETURN & GROW STRONGER** — Press **🔄 Refresh**, claim rewards, upgrade gear and fight bosses.\n'
         '⚔️ **Better weapons and armour auto-equip by default.** To adjust your build, go to **/play → 🧙 Hero → 🎒 Inventory** to compare gear, equip manually, lock favourites or turn Auto-Equip OFF.\n\n'
         '## 🧭 HOME NAVIGATION\n'
         '🔄 **Refresh** — Process idle battles and see your latest rewards.\n'
-        '🏰 **Dungeon** — Boss Battle, Treasure Goblin, Mystery Chambers and Abyss Portals.\n'
-        '🧙 **Hero** — Inventory, Enchanting, Relic Collection, Companions and Skill Tree.\n'
+        '🏰 **Dungeon** — Active Expeditions, Floor Checkpoints, Tactical Boss Battles, Treasure Goblins, Mystery Chambers and Abyss Portals.\n'
+        '🧙 **Hero** — Build Specialisations, Inventory, Enchanting, Relics, Companions and Skill Tree.\n'
         '🏰 **Kingdom** — Blacksmith, Adventurer Camp and Travelling Merchant.\n'
         '🎯 **Activities** — Wheel of Fortune, Quest Board, Daily Bounty, Gauntlet, Arena Trials and Treasure Vault.\n'
         '📖 **Info** — Leaderboard and Adventurer Log (12-hour progress reports).\n📘 **Help** — Open this complete guide directly from Home.\n\n'
+        '## ⚔️ ACTIVE GAMEPLAY\n'
+        '🎮 **Expeditions** — Three charges maximum, recharge one every two hours. Five rooms: Fight, Scout or Rest. Finish to bank XP and resources.\n'
+        '🏰 **Checkpoints** — Every 10th floor (10, 20, 30, etc.), except legendary boss floors (50, 100, etc.), pauses automatic climbing. You receive **one Discord DM per checkpoint** when progress is processed through /play or Refresh. Go to **/play → 🏰 Dungeon → Checkpoint** and complete **Guard → Focus → Attack** to resume. If DMs are disabled, the checkpoint remains visible in your game UI.\n'
+        '🧙 **Builds** — Hero → Build: Balanced, Aggressive, Defensive or Treasure Hunter. Switch freely to suit your approach.\n'
+        '🐉 **Tactical Bosses** — Check the boss intent. Guard heavy strikes, use Power Strike against feints, and plan healing.\n\n'
         '## 🏰 DUNGEON DISCOVERIES\n'
-        '🐉 **Boss Battle** — Legendary boss every 50 floors. Receive a one-time DM when a new boss checkpoint is discovered on check-in. Use Attack, Guard, Power Strike or Second Wind.\n'
+        '🐉 **Boss Battle** — Legendary boss every 50 floors (instead of a normal checkpoint). One-time DM on check-in. Read enemy intent; choose Attack, Guard, Power Strike or Second Wind.\n'
         '👹 **Treasure Goblin** — Personal clue challenge every six hours, with two attempts; DM alert on check-in.\n'
         '🏰 **Mystery Chambers** — Discover while climbing; choose an encounter reward. DM alert on check-in.\n'
         '🌀 **Abyss Portals** — Optional three-stage Blood, Golden or Mystic routes; DM alert on check-in.\n\n'
@@ -112,7 +117,7 @@ def help_embed():
         '📩 A private progress summary is sent every **12 hours** while the event is active. DMs must be enabled.\n'
         '⏳ Offline battles are capped at **8 hours** per progress calculation, including scheduled reports.\n\n'
         '## 💡 TIPS\n'
-        '💰 Stuck? Your hero farms resources and heals. Every ten floors grants a milestone chest.\n'
+        '💰 Stuck? Your hero farms resources and heals. Passive auto-upgrading is disabled: visit the Blacksmith yourself. Every ten floors grants a milestone chest.\n'
         '🏠 **Home** returns to the main hub; **⬅️ Back** returns to the previous category.\n'
         '🏆 Highest floor after seven days wins; ties go to whoever reached it first.'
     ),color=PURPLE)
@@ -128,8 +133,8 @@ CATEGORY_SCREENS = {
     'info': ('📖 INFORMATION', '📘 Read the guide or check the competition leaderboard.'),
 }
 SCREEN_PARENT = {
-    'boss':'dungeon','goblin':'dungeon','chamber':'dungeon','portal':'dungeon',
-    'inventory':'hero','enchant':'hero','relics':'hero','pets':'hero','skills':'hero',
+    'expedition':'dungeon','checkpoint':'dungeon','boss':'dungeon','goblin':'dungeon','chamber':'dungeon','portal':'dungeon',
+    'build':'hero','inventory':'hero','enchant':'hero','relics':'hero','pets':'hero','skills':'hero',
     'smith':'kingdom','camp':'kingdom','merchant':'kingdom',
     'journal':'info',
     'activities':'activities_menu','arena':'activities_menu','wheel':'activities_menu','quests':'activities_menu',
@@ -159,21 +164,23 @@ def journal_dm_embed(s,report):
 
 def player_embed(s, notice='', screen='home'):
     titles = {'home': '🏰⚔️ YOUR DUNGEON ADVENTURE', 'smith': '⚒️🔥 THE ROYAL BLACKSMITH',
-              'activities': '🎯✨ QUESTS & TREASURE', 'wheel':'🎡✨ WHEEL OF FORTUNE', 'quests':'📜✨ DAILY QUEST BOARD', 'chamber': '🏰✨ MYSTERY CHAMBER', 'arena':'🏟️⚔️ ARENA TRIALS', 'pets':'🐾✨ COMPANIONS', 'skills':'🌳✨ SKILL TREE', 'merchant':'🧙🛒 TRAVELLING MERCHANT', 'journal':'📖 ADVENTURER LOG', 'goblin':'👹💰 TREASURE GOBLIN', 'boss': '🐉🔥 LEGENDARY BOSS', 'inventory':'🎒⚔️ HERO INVENTORY', 'enchant':'✨ WEAPON ENCHANTING', **{key: value[0] for key, value in CATEGORY_SCREENS.items()}}
+              'activities': '🎯✨ QUESTS & TREASURE', 'wheel':'🎡✨ WHEEL OF FORTUNE', 'quests':'📜✨ DAILY QUEST BOARD', 'chamber': '🏰✨ MYSTERY CHAMBER', 'arena':'🏟️⚔️ ARENA TRIALS', 'pets':'🐾✨ COMPANIONS', 'skills':'🌳✨ SKILL TREE', 'merchant':'🧙🛒 TRAVELLING MERCHANT', 'journal':'📖 ADVENTURER LOG','expedition':'⚔️ ACTIVE EXPEDITION','checkpoint':'🏰 ASCENSION CHECKPOINT','build':'🧙 BUILD SPECIALISATIONS', 'goblin':'👹💰 TREASURE GOBLIN', 'boss': '🐉🔥 LEGENDARY BOSS', 'inventory':'🎒⚔️ HERO INVENTORY', 'enchant':'✨ WEAPON ENCHANTING', **{key: value[0] for key, value in CATEGORY_SCREENS.items()}}
     e = discord.Embed(title=titles.get(screen, titles['home']), description=stats(s), color=GOLD if screen=='home' else PURPLE)
     if screen=='home':
+        if s.get('checkpoint'):
+            e.add_field(name='🏰 CHECKPOINT WAITING',value=f'Floor **{s["checkpoint"]["floor"]}** needs a 3-step manual trial. Open Dungeon → Checkpoint.',inline=False)
         if s.get('chambers'):
             e.add_field(name='🚨🏰 MYSTERY CHAMBER DISCOVERED!',value=f'**{len(s["chambers"])} unclaimed chamber(s)!** Open **🏰 Dungeon → Mystery Chamber** to explore. Your hero keeps climbing!',inline=False)
         e.add_field(name='👹 TREASURE GOBLIN',value='A personal goblin appears every **6 hours**. Open **🏰 Dungeon → Treasure Goblin** to solve its clue and claim your loot!',inline=False)
         e.add_field(name='🎡 DAILY ACTIVITIES',value='🎡 **Wheel of Fortune** — spin every 6 hours.\n📜 **Quest Board** — 3 daily goals and a bonus chest.',inline=False)
         e.add_field(name='🗺️ YOUR ADVENTURE',
                     value=('🔴 **A LEGENDARY BOSS IS WAITING!** Open **🐉 Boss Battle**.' if s['boss']
-                           else '🟢 **AUTO-CLIMB ACTIVE!** Your hero is battling or farming.'), inline=False)
+                           else '🟠 **CHECKPOINT PAUSED** — clear the trial to resume.' if s.get('checkpoint') else '🟢 **AUTO-CLIMB ACTIVE!** Your hero is battling or farming.'), inline=False)
         e.add_field(name='🗡️ EQUIPMENT',
                     value=(f'⚔️ **{s["weapon"]["name"]}**  +{s["weapon"]["plus"]} · R{s["weapon"]["refine"]}\n'
                            f'🛡️ **{s["armour"]["name"]}**  +{s["armour"]["plus"]} · R{s["armour"]["refine"]}'), inline=False)
         e.add_field(name='🚀 QUICK NAVIGATION',
-                    value='**🔄 Refresh** — Collect idle progress.\n**🏰 Dungeon** — Bosses, Goblins, Chambers & Portals.\n**🧙 Hero** — Inventory, Enchanting, Relics, Pets & Skills.\n**🏰 Kingdom** — Blacksmith, Camp & Merchant.\n**🎯 Activities** — Wheel, Quests, Arena & Bounty.\n**📖 Info** — Leaderboard & Adventurer Log.\n**📘 Help** — Open the complete game guide instantly.',inline=False)
+                    value='**🔄 Refresh** — Collect idle progress.\n**🏰 Dungeon** — Expeditions, Checkpoints, Bosses & Discoveries.\n**🧙 Hero** — Builds, Inventory, Enchanting, Relics, Pets & Skills.\n**🏰 Kingdom** — Blacksmith, Camp & Merchant.\n**🎯 Activities** — Wheel, Quests, Arena & Bounty.\n**📖 Info** — Leaderboard & Adventurer Log.\n**📘 Help** — Open the complete game guide instantly.',inline=False)
         e.add_field(name='📜 LATEST ADVENTURE REPORT', value=(notice or s.get('last_report') or 'Your journey begins!')[:1024], inline=False)
     elif screen=='journal':
         with game.open_db() as db:
@@ -187,6 +194,21 @@ def player_embed(s, notice='', screen='home'):
             e.add_field(name='📩 NEXT REPORT',value=f'<t:{int(report["next_due"])}:R> (Discord DM)',inline=False)
     elif screen in CATEGORY_SCREENS:
         e.add_field(name='🧭 SELECT A DESTINATION', value=CATEGORY_SCREENS[screen][1], inline=False)
+    elif screen=='build':
+        style=s.get('build','balanced')
+        e.add_field(name='🧙 CURRENT COMBAT BUILD',value=f'**{game.BUILD_STYLES.get(style,game.BUILD_STYLES["balanced"])[0]}**\nSwitch freely. Aggressive increases attack but lowers defence; Defensive favours survival; Treasure Hunter earns more gold but deals less damage.',inline=False)
+    elif screen=='expedition':
+        ex=s.get('expedition')
+        if ex:
+            e.add_field(name=f'⚔️ ROOM {ex["stage"]}/5',value=f'❤️ Expedition HP **{ex["hp"]}/100**\n🪙 Pending gold **{ex["gold"]:,}** · 🧱 Materials **{ex["materials"]}** · ⭐ XP **{ex["xp"]}**\nChoose Fight (high rewards/risk), Scout (safe supplies) or Rest (heal). Rewards bank only after room 5.',inline=False)
+        else:
+            e.add_field(name='🎟️ AVAILABLE EXPEDITIONS',value=f'**{s.get("expedition_charges",3)}/3** charges · +1 every 2 hours\nFive interactive rooms. Finish to claim XP and loot. No floor loss on failure.',inline=False)
+    elif screen=='checkpoint':
+        gate=s.get('checkpoint')
+        if gate:
+            clues=['🛡️ The guardian winds up a crushing strike. **Guard** to survive.', '🎯 A hidden rune is pulsing. **Focus** to break the seal.', '⚔️ The guardian is exposed. **Attack** to finish the trial.']
+            e.add_field(name=f'🏰 FLOOR {gate["floor"]} · STAGE {gate["stage"]+1}/3',value=clues[gate['stage']],inline=False)
+        else:e.add_field(name='🏰 NO CHECKPOINT WAITING',value='Every 10 floors requires a three-step trial (except legendary boss floors). Continue climbing to discover the next one.',inline=False)
     elif screen=='inventory':
         game.ensure_gear(s)
         weapon,armour=game.gear_bag(s,'weapon'),game.gear_bag(s,'armour')
@@ -281,9 +303,12 @@ def player_embed(s, notice='', screen='home'):
                            f'🛡️ Heavy strike every 3rd turn — **Guard** to reduce damage!\n'
                            f'💚 Second Wind heals once per fight. · Mercy bonus **+{s["boss_mercy"]*5}%**'
                            if b else '🟢 No boss waiting! Keep climbing; a legendary boss appears every 50 floors.'), inline=False)
+    if screen=='boss' and s.get('boss'):
+        intent=game.boss_intent(s['boss'])
+        e.add_field(name='👁️ ENEMY INTENT',value={'heavy':'💥 Heavy Strike next — Guard reduces damage','feint':'🌀 Feint next — Power Strike gets a bonus','strike':'⚔️ Normal Strike next — choose your timing'}[intent],inline=False)
     if notice and screen!='home':
         e.add_field(name='📣 LATEST RESULT', value=notice[:1024], inline=False)
-    e.set_footer(text='⚔️ Battles: 15 seconds • 🌙 Offline: 8 hours • 🏆 7-day event • 📖 Help available')
+    e.set_footer(text='⚔️ Battles: 45 seconds • 🌙 Offline: 8 hours • 🏆 7-day event • 📖 Help available')
     return e
 
 async def send_private(interaction, *, embed=None, view=None, content=None):
@@ -338,6 +363,46 @@ async def notify_boss(user, state):
         )
     except (discord.Forbidden, discord.HTTPException):
         logging.info('Could not DM boss notification to %s (DMs may be disabled)', user.id)
+
+async def notify_checkpoint(user, state):
+    """DM once when a new ten-floor checkpoint is discovered on check-in.
+
+    Persist the notification floor before attempting the DM, so disabled DMs
+    cannot cause repeated alerts. No new slash commands or background worker.
+    """
+    gate = state.get('checkpoint')
+    if not gate:
+        return
+    floor = int(gate.get('floor', 0))
+    if floor <= 0 or floor % 10 or floor % 50 == 0:
+        return
+    with game.open_db() as db:
+        db.execute('BEGIN IMMEDIATE')
+        try:
+            latest = game.get_player(db, user.id)
+            if not latest or not latest.get('checkpoint') or int(latest['checkpoint'].get('floor', 0)) != floor:
+                db.execute('COMMIT')
+                return
+            if int(latest.get('checkpoint_dm_floor', 0)) >= floor:
+                db.execute('COMMIT')
+                return
+            latest['checkpoint_dm_floor'] = floor
+            game.save_player(db, user.id, user.display_name, latest)
+            db.execute('COMMIT')
+        except Exception:
+            db.execute('ROLLBACK')
+            raise
+    try:
+        await user.send(
+            '🏰 **ABYSS ASCENSION — FLOOR CHECKPOINT!**\n'
+            f'⚔️ You have reached **Floor {floor:,}**!\n'
+            '⏸️ Your automatic climb is paused until you clear the three-stage trial.\n'
+            '🛡️ **Guard → 🎯 Focus → ⚔️ Attack**\n'
+            'Open **/play → 🏰 Dungeon → Checkpoint** to complete it and continue climbing.\n'
+            '💾 Your existing floor and progress are safe.'
+        )
+    except (discord.Forbidden, discord.HTTPException):
+        logging.info('Could not DM checkpoint notification to %s (DMs may be disabled)', user.id)
 
 async def notify_chambers(user, state):
     """DM once for newly discovered chambers, max once per 6 hours.
@@ -428,7 +493,7 @@ async def show_player(interaction, screen='home', action=None):
         await interaction.edit_original_response(embed=player_embed(s, notice, screen), view=ChamberView(s) if screen=='chamber' else InventoryView(s) if screen=='inventory' else GameView(screen))
         # The UI has already been updated. Notification errors must not
         # overwrite a successful panel with a misleading generic error.
-        for notify in (notify_boss, notify_chambers, notify_goblin, notify_portals):
+        for notify in (notify_boss, notify_checkpoint, notify_chambers, notify_goblin, notify_portals):
             try:
                 await notify(interaction.user, s)
             except Exception:
@@ -470,13 +535,16 @@ class GameView(discord.ui.View):
                      ('Info','info','📖',None,discord.ButtonStyle.secondary),
                      ('Help','help','📘',None,discord.ButtonStyle.success)]
         elif screen=='dungeon':
-            buttons=[('Refresh','home','🔄',None,discord.ButtonStyle.success),
+            buttons=[('Expedition','expedition','⚔️',None,discord.ButtonStyle.success),
+                     ('Checkpoint','checkpoint','🏰',None,discord.ButtonStyle.primary),
+                     ('Refresh','home','🔄',None,discord.ButtonStyle.success),
                      ('Boss Battle','boss','🐉',None,discord.ButtonStyle.danger),
                      ('Treasure Goblin','goblin','👹',None,discord.ButtonStyle.success),
                      ('Mystery Chamber','chamber','🏰',None,discord.ButtonStyle.primary),
                      ('Abyss Portals','portal','🌀',None,discord.ButtonStyle.primary)]
         elif screen=='hero':
-            buttons=[('Inventory','inventory','🎒',None,discord.ButtonStyle.primary),
+            buttons=[('Build','build','🧙',None,discord.ButtonStyle.success),
+                     ('Inventory','inventory','🎒',None,discord.ButtonStyle.primary),
                      ('Enchant','enchant','✨',None,discord.ButtonStyle.primary),
                      ('Relics','relics','💍',None,discord.ButtonStyle.primary),
                      ('Companions','pets','🐾',None,discord.ButtonStyle.primary),
@@ -495,6 +563,24 @@ class GameView(discord.ui.View):
                      ('Leaderboard','rankings','🏆',None,discord.ButtonStyle.primary)]
         elif screen=='journal':
             buttons=[('Back','info','⬅️',None,discord.ButtonStyle.secondary),('Home','home','🏠',None,discord.ButtonStyle.secondary)]
+        elif screen=='build':
+            buttons=[('Balanced','build','⚖️','build_balanced',discord.ButtonStyle.secondary),
+                     ('Aggressive','build','⚔️','build_aggressive',discord.ButtonStyle.danger),
+                     ('Defensive','build','🛡️','build_defensive',discord.ButtonStyle.primary),
+                     ('Treasure','build','💰','build_treasure',discord.ButtonStyle.success),
+                     ('Back','hero','⬅️',None,discord.ButtonStyle.secondary)]
+        elif screen=='expedition':
+            buttons=[('Start','expedition','🚀','expedition_start',discord.ButtonStyle.success),
+                     ('Fight','expedition','⚔️','expedition_fight',discord.ButtonStyle.danger),
+                     ('Scout','expedition','🔎','expedition_scout',discord.ButtonStyle.primary),
+                     ('Rest','expedition','🏕️','expedition_rest',discord.ButtonStyle.secondary),
+                     ('Leave','expedition','🚪','expedition_leave',discord.ButtonStyle.secondary),
+                     ('Back','dungeon','⬅️',None,discord.ButtonStyle.secondary)]
+        elif screen=='checkpoint':
+            buttons=[('Guard','checkpoint','🛡️','checkpoint_guard',discord.ButtonStyle.primary),
+                     ('Focus','checkpoint','🎯','checkpoint_focus',discord.ButtonStyle.success),
+                     ('Attack','checkpoint','⚔️','checkpoint_attack',discord.ButtonStyle.danger),
+                     ('Back','dungeon','⬅️',None,discord.ButtonStyle.secondary)]
         elif screen=='inventory':
             buttons=[('Auto-Equip ON/OFF','inventory','🤖','gear_auto',discord.ButtonStyle.primary),
                      ('Back','home','⬅️',None,discord.ButtonStyle.secondary)]
@@ -737,6 +823,7 @@ async def play(interaction:discord.Interaction,panel:bool=False):
         s['_user_id']=interaction.user.id
         await send_private(interaction,embed=player_embed(s,notice),view=GameView())
         await notify_boss(interaction.user,s)
+        await notify_checkpoint(interaction.user,s)
         await notify_chambers(interaction.user,s)
         await notify_goblin(interaction.user,s)
         await notify_portals(interaction.user,s)
