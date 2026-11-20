@@ -1,28 +1,83 @@
-# The Golden Vault — Discord bot
+# Dungeon Climber — Discord bot (Python / Railway)
 
-A 7-day, 50-floor treasure competition. One `/play` command opens a private button-driven interface; all other actions are buttons. Includes rules, help, leaderboard, random challenges, health, healing, expeditions, daily activities, workshop, bosses and a Royal Treasury.
+A playable **first implementation** of the agreed 7-day hybrid idle dungeon game.
+The balancing simulator is included separately for reference; its predicted floor
+numbers are **not guaranteed** by this new implementation.
 
-## Deploy on Railway
-1. Create a Railway Python service from this project and add a **persistent volume** mounted at `/data` (otherwise SQLite progress disappears after redeploy).
-2. Set `DISCORD_TOKEN` to the bot token. Set `DATABASE_PATH=/data/golden_vault.db`. Set `EVENT_START` to the event start in ISO 8601 UTC format, e.g. `2026-11-22T00:00:00+00:00`. Set `EVENT_DAYS=7`.
-3. Optional: set `GUILD_ID` to your test server's numeric ID to sync `/play` immediately. Otherwise global command sync can take time.
-4. In Discord Developer Portal, invite the bot with `bot` and `applications.commands` scopes, and permissions to Send Messages and Embed Links. No privileged intents required.
-5. Run `python main.py` locally with Python 3.11+ and `pip install -r requirements.txt` or deploy on Railway.
+## Setup
 
-## Game rules and balance
-- Event lasts 7 days from `EVENT_START`; the bot displays countdown and stops score-bearing play at the end. If `EVENT_START` is omitted, the event begins when the bot first starts and that start is saved in the DB.
-- 50 floors; 2–4 random challenges per floor, a guardian every 10 floors. Floor progress never resets.
-- 100 HP maximum, +10 HP every five minutes (including offline), wrong answers and timeouts -10 HP. At 0 HP, wait to regenerate or use a potion.
-- Trivia/true-false: 10 seconds; patterns: 30 seconds; memory: 5-second reveal + 30 seconds to answer; lock: 60 seconds; paths: 60 seconds.
-- Questions and puzzle values randomised, shuffled answers and per-player state. Challenges are private and server-validated; expired interactions cannot score.
-- Keys: bronze, silver and gold. Chests award fixed score by tier (no lucky leaderboard jackpots). Gold is for upgrades and potions. Keys are for chests.
-- Expeditions: repeatable 3–5 rooms, bank loot when leaving, risk half unbanked gold on defeat. First 3 expeditions per UTC day award Vault Score; further expeditions award gold/keys only.
-- Daily tasks: five per UTC day; missed days remain accessible during the event through a day selector. Guardian: one per day; daily tasks are independent of the floor climb.
-- Royal Treasury unlocks at Floor 50, grants one score-bearing trial per day, with catch-up days available.
-- Leaderboard: Vault Score, then floor, then accuracy. All UI buttons are scoped to the player except the public `/play` command response (which is ephemeral).
+1. Create a Discord application and bot in the Discord Developer Portal.
+2. Invite the bot to your server with the `bot` and `applications.commands` scopes;
+   grant `Send Messages`, `Embed Links`, and `Use Application Commands` permissions.
+3. Upload this folder to GitHub and connect the repository to a Railway service.
+4. In Railway, set `DISCORD_TOKEN` to your bot token and `GUILD_ID` to your test server ID.
+5. **Create a Railway Volume mounted at `/data`**. Set `DATABASE_PATH=/data/dungeon_climber.db`.
+   Without the volume, player progress may be lost on redeploy.
+6. Optionally set `EVENT_START_UTC=2026-11-22T18:00:00Z` (change to your date).
+   If omitted, the first player's character creation starts the seven-day timer.
+7. Start the service (`python bot.py`). Commands may take a little time to sync.
 
-## Notes
-- This is a fully playable initial release, not a load-tested production system. Try it in a test server before opening the event.
-- A small bundled, human-reviewed-style general knowledge question bank is provided; expand it substantially before a public competition. The puzzle generators add variety, but a fixed trivia bank can repeat.
-- Discord cannot prevent screenshots or AI assistance. Ten-second timers make copying less convenient, not impossible.
-- SQLite writes are transactional; one bot process is supported. Do not run multiple replicas against the same SQLite file.
+## Commands
+
+- `/play` — create a Berserker, Guardian, or Rogue; then opens the private button UI.
+- `/leaderboard` — highest floor reached; earliest arrival wins a tie.
+- `/guide` — instructions.
+- `/eventstatus` — start/end timer.
+
+## Main game
+
+- A battle is processed every 15 seconds **when the player checks in**; elapsed
+  time is caught up from the saved timestamp, capped at eight hours. No background
+  task per player is needed.
+- The hero climbs automatically. Every 50th floor requires manual boss actions.
+- Failed floors earn resources; repeated failures trigger five rounds of farming.
+- Milestone chests appear every ten floors; vault keys from major milestones.
+- Weapon and armour drops scale with floor; upgrades transfer to replacement gear.
+- Blacksmith has +1 to +10 upgrades and uncapped Refinement after Floor 100.
+- Daily Bounty, Gauntlet, Vault and event leaderboard are available in the UI.
+
+## Important before public launch
+
+This is a **playable beta**, not a production-verified version of your previous bot.
+It has not been connected to your Discord server or Railway deployment. The
+existing abstract simulator and this concrete combat implementation have different
+mechanics; test actual floor pacing, equipment and bosses with players before
+announcing prizes.
+
+**Persistence:** SQLite on a Railway Volume is suitable for one bot process.
+Do not run multiple bot replicas against the same SQLite database.
+
+**Security:** Never commit a real Discord token. Use Railway Variables.
+
+**Event reset:** This beta intentionally has no public reset command. For a
+new event, back up the database and create a fresh database or use a separate
+Railway volume. Avoid deleting active player data without a backup.
+
+**Known scope limitations:** Bosses use a six-turn interactive combat model, not
+full animated battles; equipment is automatically equipped or dismantled (no
+inventory browsing), and classes are simple stat variants. There is no
+independent global background combat loop; progression is calculated at check-in.
+
+## New: Single command, public role panel and prizes
+
+**The only slash command is `/play`.** Use `/play` to create/open your private game UI.
+A server administrator with **Manage Server** can run `/play panel:True` in the
+announcement channel to post a **public, persistent join panel** with a large
+headline, a green **JOIN DUNGEON CLIMBER** button, help and leaderboard buttons.
+Joining via the button opens a **private** class-selection menu; players do not
+need to use slash commands. The join panel survives bot restarts.
+
+**Prizes:** 1st 200c + HC Box; 2nd 125c + HC Box; 3rd 75c + HC Box.
+The Help section, leaderboard and event timer are accessible through buttons.
+
+**Optional Discord role assignment:** Create a participant role and set
+`DISCORD_ROLE_ID` to its numeric ID in Railway Variables. Give the bot the
+**Manage Roles** permission and put the bot's role **above** the participant
+role in Server Settings → Roles. A participant receives this role on join;
+without `DISCORD_ROLE_ID`, the join panel still works as an enrollment panel.
+
+**Upgrade note:** Existing global `/leaderboard`, `/guide` and `/eventstatus`
+commands from an older deployment may remain visible temporarily because Discord
+caches command definitions. This version registers only `/play` (and when
+`GUILD_ID` is set, synchronizes the guild command). For older global commands,
+remove them from the Discord developer app or perform a one-time global sync.
