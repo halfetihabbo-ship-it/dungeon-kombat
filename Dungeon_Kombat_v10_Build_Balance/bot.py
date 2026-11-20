@@ -32,7 +32,14 @@ def notification_enabled(uid):
     return bool(json.loads(row[0]).get('enabled',True)) if row else True
 
 def next_raid_time(p):
-    return START + p.wave*1800 if p.wave<336 else None
+    if p.wave>=336:return None
+    # First wave is 30 minutes AFTER event start, not at the starting instant.
+    scheduled=START+(p.wave+1)*1800
+    row=engine.db.execute('SELECT data FROM events WHERE id=?',(f'joined_at:{p.id}',)).fetchone()
+    if row:
+        joined=json.loads(row[0])['at']
+        scheduled=max(scheduled,joined+1800)
+    return scheduled
 
 def next_raid_text(p):
     due=next_raid_time(p)
@@ -40,12 +47,21 @@ def next_raid_text(p):
     return f'**<t:{int(due)}:R>** (<t:{int(due)}:t> local time)'
 
 def display(p):
-    e=discord.Embed(title='🏰 Dungeon Master',description=f'Level **{p.level()}/75** · Gold **{p.gold:,}** · XP **{p.xp:,}** · Shards **{p.shards:,}**',color=0x7d5fff)
-    e.add_field(name='Dungeon',value=f'{len(p.rooms)}/{min(MAX_ROOMS,p.capacity())} rooms · {p.style} · Power {p.power():.0f}')
-    e.add_field(name='Invasions',value=f'{p.wave}/336 · {p.points:,} points')
+    e=discord.Embed(title='🏰 YOUR DUNGEON',description=f'**Level {p.level()}/75**  •  🪙 **{p.gold:,} Gold**  •  ✨ **{p.xp:,} XP**\n🏆 **{p.points:,} points**  •  💎 **{p.shards:,} shards**',color=0x5865F2)
+    # Five starter rooms are intentionally granted at registration. The level-based
+    # capacity is for EXTRA rooms, not a limit retroactively applied to starter rooms.
+    built=len(p.rooms)
+    unlocked=min(MAX_ROOMS,p.capacity())
+    next_unlock=next((lv for lv in ROOM_UNLOCK_LEVELS if lv>p.level() and ROOM_UNLOCK_LEVELS.index(lv)+1>built),None)
+    room_status=f'{built} rooms built · {unlocked} level-unlocked slots'
+    if built>unlocked:room_status+=' (starter rooms retained)'
+    if next_unlock:room_status+=f' · Next additional slot: Lv{next_unlock}'
+    e.add_field(name='🏗️ Your defences',value=f'**{built} rooms** • {p.style} build • ⚡ Power **{p.power():.0f}**\n{room_status}',inline=False)
+    e.add_field(name='🛡️ Invasions survived',value=f'**{p.wave}/336** waves',inline=True)
     if p.wave<336:
         q=engine.next_preview(p.id)
-        e.add_field(name='⚔️ Next invasion',value=f"**{next_raid_text(p)}**\nWave {q['wave']}: {q['enemy_type']} · Threat {q['threat']}\n{q['hint']}\n🔔 DM reminders: {'On' if notification_enabled(p.id) else 'Off'} (30 minutes before)",inline=False)
+        e.add_field(name='⏳ Prepare for your next battle',value=f"**{next_raid_text(p)}**\n**Wave {q['wave']}** · {q['enemy_type']} enemies\n💡 {q['hint']}\n🔔 Alerts {'ON' if notification_enabled(p.id) else 'OFF'}",inline=False)
+    e.set_footer(text='💡 New? Tap Quick Start. Upgrade a room before the next wave!')
     return e
 
 def help_embed(section='overview'):
@@ -64,13 +80,16 @@ def help_embed(section='overview'):
 class MenuButton(discord.ui.Button):
     def __init__(self,label,action,row=0,style=discord.ButtonStyle.secondary):
         super().__init__(label=label,style=style,row=row);self.action=action
-    async def callback(self,i):await self.view.handle(i,self.action)
+    async def callback(self,i):
+        await i.response.defer()  # Acknowledge button immediately; edit after processing.
+        await self.view.handle(i,self.action)
 
 class RoomPicker(discord.ui.Select):
     def __init__(self,rooms):
         options=[discord.SelectOption(label=f'Room {n}: {r.monster} / {r.trap}'[:100],value=str(n-1),description=f'M{r.monster_level} · T{r.trap_level} · R{r.level}') for n,r in enumerate(rooms,1)]
         super().__init__(placeholder='Select a room to upgrade',options=options[:25],row=0)
     async def callback(self,i):
+        await i.response.defer()
         self.view.selected=int(self.values[0]);await self.view.render(i,notice=f'Selected room {self.view.selected+1}.')
 
 class Management(discord.ui.View):
@@ -91,7 +110,7 @@ class Management(discord.ui.View):
         elif mode=='help':
             buttons=[('Overview','overview',0),('Building','building',0),('Combat','combat',1),('Activities','activities_help',1),('Scoring','scoring',2),('Back','main',3)]
         else:
-            buttons=[('Dungeon','dungeon',0),('Activities','activities',0),('Help','help',1),('Raid Alerts','alerts',1),('Refresh','refresh',2),('Exit','exit',2)]
+            buttons=[('🚀 Quick Start','quickstart',0),('🏰 Build & Upgrade','dungeon',0),('⚔️ Go Adventuring','activities',1),('🏆 My Progress','progress',1),('📖 Help','help',2),('🔔 Raid Alerts','alerts',2),('🔄 Refresh','refresh',3),('🚪 Exit','exit',3)]
         for label,action,row in buttons:
             style=discord.ButtonStyle.primary if action in ('dungeon','activities','room_menu') else discord.ButtonStyle.secondary
             if action=='exit':style=discord.ButtonStyle.danger
@@ -105,8 +124,8 @@ class Management(discord.ui.View):
         view=Management(self.owner,mode,self.selected if selected is None else selected)
         p=get(self.owner)
         embed=help_embed() if mode=='help' else display(p)
-        if mode=='main':notice=notice or ('🏰 **Getting started:** Open **Dungeon** to build and upgrade rooms. Open **Activities** for raids, PvP and missions. **Raid Alerts** toggles DM reminders. **Help** explains every feature.\n\n⚔️ **Next NPC invasion:** '+next_raid_text(p))
-        if mode=='dungeon':notice=notice or '🏰 **Build your defence:** **Upgrade Rooms** lets you select one room and keep upgrading it. **Add Room** expands your dungeon when unlocked. **Room Order** shows the sequence attackers face. Use `/configure` to swap monsters/traps and `/reorder` to swap positions.'
+        if mode=='main':notice=notice or ('**🎯 YOUR NEXT MOVE**\n1️⃣ Tap **Build & Upgrade** to strengthen your rooms.\n2️⃣ Try **Go Adventuring** to earn extra rewards.\n3️⃣ Be ready for the next invasion '+next_raid_text(p)+'\n\n✨ Tap **Quick Start** for a guided walkthrough.')
+        if mode=='dungeon':notice=notice or '🏰 **Build your defence:** **Upgrade Rooms** lets you select one room and keep upgrading it. **Add Room** expands your dungeon when unlocked. Everyone starts with five rooms; the level-based slot counter can initially be lower than five, but your starter rooms remain usable. Additional rooms unlock once your slot count exceeds your existing room count. **Room Order** shows the sequence attackers face. Use `/configure` to swap monsters/traps and `/reorder` to swap positions.'
         if mode=='room':
             if view.selected is not None and p and 0<=view.selected<len(p.rooms):
                 r=p.rooms[view.selected]
@@ -114,8 +133,16 @@ class Management(discord.ui.View):
                 notice=header+(notice or 'Keep upgrading this room. Use **Change Room** only when finished.')
             else:notice=notice or 'Select a room once. It stays selected until you press **Change Room**.'
         if mode=='activities':notice=notice or '⚔️ **Fortress Raid:** Earn gold and XP (20-minute cooldown). **PvP Raid:** Attack a similar-power player (6-hour cooldown). **Daily Mission:** Claim after two invasions today.\n\nYour next NPC invasion: '+next_raid_text(p)
-        await i.response.edit_message(content=notice,embed=embed,view=view)
+        await i.edit_original_response(content=notice,embed=embed,view=view)
     async def handle(self,i,action):
+        if action=='quickstart':
+            embed=discord.Embed(title='🚀 Your first 3 moves',description='**1️⃣ Strengthen a room**\nTap **Build & Upgrade** → **Upgrade Rooms** → select any room. Upgrade its monster, trap or walls. You stay in that room until you change it.\n\n**2️⃣ Earn extra rewards**\nOpen **Go Adventuring** → **Fortress Raid** for a chance to earn gold and XP.\n\n**3️⃣ Prepare for invasion**\nThe next NPC wave attacks automatically at the time on your dashboard. You have at least 30 minutes after joining to prepare.\n\n**🏆 Goal:** Earn the most points over seven days to finish in the top three!',color=0x57F287)
+            return await i.edit_original_response(content='👇 **Ready?** Press **Build & Upgrade** to begin.',embed=embed,view=Management(self.owner,'main'))
+        if action=='progress':
+            p=get(self.owner)
+            embed=display(p)
+            embed.add_field(name='🎯 Your goal',value='Defend NPC waves, earn gold and XP, upgrade your dungeon and climb `/leaderboard`.',inline=False)
+            return await i.edit_original_response(content='🏆 **Your progress so far**',embed=embed,view=Management(self.owner,'main'))
         if action=='alerts':
             enabled=not notification_enabled(self.owner)
             async with lock:
@@ -126,71 +153,79 @@ class Management(discord.ui.View):
         if action in ('main','dungeon','activities','help','refresh','room_menu'):
             mode={'room_menu':'room','refresh':self.mode}.get(action,action)
             return await self.render(i,mode,selected=-1 if action=='room_menu' else None)
-        if action=='exit':return await i.response.edit_message(content='Dungeon menu closed. Use `/play` to reopen.',embed=None,view=None)
+        if action=='exit':return await i.edit_original_response(content='Dungeon menu closed. Use `/play` to reopen.',embed=None,view=None)
         if action in ('overview','building','combat','activities_help','scoring'):
             page='activities' if action=='activities_help' else action
-            return await i.response.edit_message(content=None,embed=help_embed(page),view=Management(self.owner,'help'))
+            return await i.edit_original_response(content=None,embed=help_embed(page),view=Management(self.owner,'help'))
         if action=='order':
             p=get(self.owner)
             lines='\n'.join(f'{n}. {r.monster} Lv{r.monster_level} · {r.trap} Lv{r.trap_level} · Room Lv{r.level}' for n,r in enumerate(p.rooms,1))
-            return await i.response.edit_message(content='**Room order**\n'+(lines or 'No rooms yet.')+'\n\nUse `/reorder first second` to swap rooms.',embed=display(p),view=Management(self.owner,'dungeon'))
-        if not active():return await i.response.send_message('Event is not active.',ephemeral=True)
+            return await i.edit_original_response(content='**Room order**\n'+(lines or 'No rooms yet.')+'\n\nUse `/reorder first second` to swap rooms.',embed=display(p),view=Management(self.owner,'dungeon'))
+        if not active():return await i.followup.send('Event is not active.',ephemeral=True)
         if action in ('monster','trap','room'):
-            if self.selected is None or self.selected<0:return await i.response.send_message('Select a room from the dropdown first.',ephemeral=True)
+            if self.selected is None or self.selected<0:return await i.followup.send('Select a room from the dropdown first.',ephemeral=True)
             async with lock:
                 try:result=engine.upgrade(self.owner,self.selected,action)
-                except ValueError as ex:return await i.response.send_message(str(ex),ephemeral=True)
+                except ValueError as ex:return await i.followup.send(str(ex),ephemeral=True)
             return await self.render(i,'room',f"Upgraded {action} to level {result['new_level']} for {result['cost']:,} gold.")
         if action=='add':
             async with lock:
                 try:price=engine.add_room(self.owner,'Goblin','Spike')
-                except ValueError as ex:return await i.response.send_message(str(ex),ephemeral=True)
+                except ValueError as ex:return await i.followup.send(str(ex),ephemeral=True)
             return await self.render(i,'dungeon',f'Added Goblin + Spike room for {price:,} gold.')
         if action=='fortress':
             async with lock:
                 p=get(self.owner);now=int(time.time());key=f'fortress:{self.owner}'
                 row=engine.db.execute('SELECT data FROM events WHERE id=?',(key,)).fetchone()
                 last=int(json.loads(row[0])['last']) if row else 0
-                if now-last<1200:return await i.response.send_message(f'Next raid in {1200-(now-last)} seconds.',ephemeral=True)
+                if now-last<1200:return await i.followup.send(f'Next raid in {1200-(now-last)} seconds.',ephemeral=True)
                 power=p.power()/max(1,len(p.rooms));chance=max(.35,min(.85,.55+.12*math.log(max(.2,power/85))))
                 won=random.random()<chance
                 try:result=engine.fortress(self.owner,now,won)
-                except ValueError as ex:return await i.response.send_message(str(ex),ephemeral=True)
+                except ValueError as ex:return await i.followup.send(str(ex),ephemeral=True)
                 engine.db.execute('INSERT OR REPLACE INTO events VALUES (?,?)',(key,json.dumps({'last':now})));engine.db.commit()
             return await self.render(i,'activities',f"Fortress raid {'won' if won else 'lost'}: +{result['xp']} XP, +{result['gold']} gold.")
         if action=='mission':
             day=int((time.time()-START)//86400);key=f'mission:{self.owner}:{day}'
             async with lock:
-                if engine.db.execute('SELECT 1 FROM events WHERE id=?',(key,)).fetchone():return await i.response.send_message('Daily mission already claimed.',ephemeral=True)
+                if engine.db.execute('SELECT 1 FROM events WHERE id=?',(key,)).fetchone():return await i.followup.send('Daily mission already claimed.',ephemeral=True)
                 p=get(self.owner)
-                if p.wave<day*48+2:return await i.response.send_message('Defend at least two invasion waves today before claiming.',ephemeral=True)
+                if p.wave<day*48+2:return await i.followup.send('Defend at least two invasion waves today before claiming.',ephemeral=True)
                 p.xp+=220;p.gold+=500;engine.save(p)
                 engine.db.execute('INSERT INTO events VALUES (?,?)',(key,json.dumps({'claimed':True})));engine.db.commit()
             return await self.render(i,'activities','Daily mission complete: +220 XP and +500 gold.')
         if action=='pvp':
             async with lock:
                 a=get(self.owner);now=int(time.time())
-                if now-a.last_pvp<PVP_SECONDS:return await i.response.send_message(f'PvP cooldown: {(PVP_SECONDS-(now-a.last_pvp))//60} minutes remaining.',ephemeral=True)
+                if now-a.last_pvp<PVP_SECONDS:return await i.followup.send(f'PvP cooldown: {(PVP_SECONDS-(now-a.last_pvp))//60} minutes remaining.',ephemeral=True)
                 ids=[x[0] for x in engine.db.execute('SELECT id FROM players WHERE id!=?',(self.owner,))]
                 matches=[]
                 for pid in ids:
                     d=get(pid)
                     if .9<=a.power()/max(1,d.power())<=1.1 and not (now-a.last_target_at<86400 and a.last_target==pid):matches.append(d)
-                if not matches:return await i.response.send_message('No eligible opponents within ±10% power. Try again later.',ephemeral=True)
+                if not matches:return await i.followup.send('No eligible opponents within ±10% power. Try again later.',ephemeral=True)
                 target=random.choice(matches)
                 counter={'Swarm':'Cleave','Fortress':'Siege','Curse':'Dispel','Dragon':'Pierce','Balanced':'Cleave'}[target.style]
                 try:result=engine.pvp(self.owner,target.id,now,attack=counter,scout=True)
-                except ValueError as ex:return await i.response.send_message(str(ex),ephemeral=True)
+                except ValueError as ex:return await i.followup.send(str(ex),ephemeral=True)
             return await self.render(i,'activities',f"Recon: {target.style} dungeon. Attacked with {counter} against <@{target.id}>. {'Victory!' if result['attacker_won'] else 'Defeat.'} +{result['attacker_points']} leaderboard points.")
 
 @client.tree.command(name='play',description='Open your Dungeon Master menu')
 async def play(i:discord.Interaction):
+    await i.response.defer(ephemeral=True)
     async with lock:
         p=get(i.user.id)
         if not p:
-            if not active():return await i.response.send_message('Registration opens when the event starts. The event is not currently active.',ephemeral=True)
+            if not active():return await i.followup.send('Registration opens when the event starts. The event is not currently active.',ephemeral=True)
             p=engine.create(str(i.user.id))
-    await i.response.send_message(content='🏰 **Welcome!** Use **Dungeon** to improve your rooms, **Activities** to earn rewards, **Help** for the full guide, and **Raid Alerts** to manage your 30-minute invasion reminders.\n\n⚔️ Next NPC invasion: '+next_raid_text(p),embed=display(p),view=Management(str(i.user.id)),ephemeral=True)
+            # New players do not receive catch-up invasions on registration.
+            # Align to the global wave number; the first personal battle is >=30 min away.
+            elapsed=max(0,int((time.time()-START)//1800))
+            p.wave=min(336,elapsed)
+            p.last_wave_at=int(START+p.wave*1800) if p.wave else -1800
+            engine.save(p)
+            engine.db.execute('INSERT OR REPLACE INTO events VALUES (?,?)',(f'joined_at:{p.id}',json.dumps({'at':time.time()})))
+    await i.followup.send(content='🎮 **Welcome to your dungeon!** Start with **🚀 Quick Start** or tap **🏰 Build & Upgrade**.\n\n🛡️ **Your next invasion:** '+next_raid_text(p),embed=display(p),view=Management(str(i.user.id)),ephemeral=True)
 
 @client.tree.command(name='notifications',description='Turn NPC invasion DM reminders on or off')
 @app_commands.describe(enabled='Receive a DM 30 minutes before each NPC invasion')
@@ -277,7 +312,7 @@ async def raid_reminders():
             due=next_raid_time(p)
             if due is None or not 0<due-now<=1800 or not notification_enabled(uid):continue
             # Only remind if the previous wave has been processed, avoiding false alerts on backlog.
-            if p.wave and p.last_wave_at<START+(p.wave-1)*1800-60:continue
+            if p.wave and p.last_wave_at<START+p.wave*1800-60:continue
             key=f'raid_reminder:{uid}:{p.wave+1}'
             if engine.db.execute('SELECT 1 FROM events WHERE id=?',(key,)).fetchone():continue
             preview=engine.next_preview(uid)
@@ -298,13 +333,17 @@ async def before_raid_reminders():await client.wait_until_ready()
 async def waves():
     now=time.time()
     if now<START:return
-    expected=min(336,max(0,int((min(now,START+DURATION)-START)//1800)+1))
+    expected=min(336,max(0,int((min(now,START+DURATION)-START)//1800)))
     async with lock:
         ids=[r[0] for r in engine.db.execute('SELECT id FROM players')]
         for pid in ids:
             p=get(pid)
+            # Shield new players for their first 30 minutes; skip waves that
+            # occurred while they were joining rather than awarding instant battles.
+            joined_row=engine.db.execute('SELECT data FROM events WHERE id=?',(f'joined_at:{pid}',)).fetchone()
+            if joined_row and now<float(json.loads(joined_row[0])['at'])+1800:continue
             for _ in range(max(0,expected-p.wave)):
-                engine.invasion(pid,int(START+p.wave*1800))
+                engine.invasion(pid,int(START+(p.wave+1)*1800))
 
 @waves.before_loop
 async def before_waves():await client.wait_until_ready()
