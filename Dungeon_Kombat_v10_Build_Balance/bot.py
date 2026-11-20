@@ -76,52 +76,67 @@ def rankings_embed():
     return e
 
 def help_embed():
-    e = discord.Embed(
-        title='📖⚔️ ABYSS ASCENSION — HELP & QUICK START',
-        description=(
-            '## 🚀 QUICK START — ONLY 3 STEPS!\n'
-            '**1️⃣ CHOOSE YOUR HERO** — Berserker ⚔️, Guardian 🛡️ or Rogue 🗡️.\n'
-            '**2️⃣ LET YOUR HERO CLIMB** — Battles happen automatically every **15 seconds** when progress is processed.\n'
-            '**3️⃣ CHECK BACK & GET STRONGER** — Collect loot, upgrade equipment and defeat bosses!\n\n'
-            '## 🧭 WHAT SHOULD I DO NEXT?\n'
-            '🏠 **Home** — View your floor, health, loot and latest progress.\n'
-            '⚒️ **Blacksmith** — Upgrade weapon/armour (+1 to +10), refine endlessly from Floor 100.\n'
-            '🎯 **Activities** — Daily Bounty, Gauntlet, Arena Trials and Treasure Vault.\n'
-            '🏰 **Mystery Chambers** — Discover them as you climb; get a DM at check-in, then choose a reward.\n'
-            '🌀 **Abyss Portals** — Discover optional 3-stage portals while climbing. Receive a Discord DM at check-in; choose Blood, Golden or Mystic paths.\n'
-            '🏕️ **Adventurer Camp** — Spend gold/materials on a 60-minute Attack, Defence or Gold buff, or rest to restore HP.\n'
-            '💍 **Relic Collection** — Collect relics from completed portals; equip one permanent passive bonus at a time.\n'
-            '🎒 **Inventory** — Store up to 20 weapons and 20 armour pieces; equip, lock or dismantle gear, and toggle auto-equip.\n'
-            '✨ **Enchanting** — Select a hero-bound bonus that stays active when your weapon changes. Changing costs 1,200 gold and 15 materials.\n'
-            '🎡 **Wheel** — one spin every six hours.\n'
-            '👹 **Treasure Goblin** — personal six-hour clue challenge; two attempts.\n'
-            '📜 **Quest Board** — three daily goals for a bonus chest.\n'
-            '🐾 **Companions** — Unlock, equip and upgrade a battle companion.\n'
-            '🌳 **Skill Tree** — Earn one skill point every 5 levels; free resets.\n'
-            '🧙 **Merchant** — Shop for materials, gear and Vault Keys; stock refreshes every 6 hours.\n'
-            '🐉 **Boss Battle** — Legendary boss every 50 floors. Use Attack, Guard, Power Strike and Second Wind.\n'
-            '🏆 **Leaderboard** — See who is leading the competition.\n\n'
-            '## 💡 IMPORTANT TIPS\n'
-            '🌙 Offline progress counts for up to **8 hours** when you return.\n'
-            '💰 Stuck on a floor? Your hero farms resources and gets stronger.\n'
-            '🎁 Every 10 floors brings a milestone chest.\n'
-            '🗝️ Vault Keys unlock treasure rewards.\n'
-            '🛡️ Better gear is auto-equipped by default unless your equipped item is locked.\n'
-            '🔁 Use **Refresh** to collect your latest idle progress.\n'
-             '🏁 The highest floor after **7 days** wins; ties go to whoever reached it first.'
-        ), color=PURPLE)
-    e.add_field(name='🎁 PRIZES', value=prize_text(), inline=False)
-    e.set_footer(text='Everything is controlled from /play — no other commands needed!')
+    e = discord.Embed(title='📖⚔️ ABYSS ASCENSION — HELP & QUICK START', description=(
+        '## 🚀 QUICK START — 3 STEPS\n'
+        '**1️⃣ CREATE YOUR HERO** — Berserker ⚔️, Guardian 🛡️ or Rogue 🗡️.\n'
+        '**2️⃣ CLIMB AUTOMATICALLY** — Battles process every **15 seconds** when progress is checked; up to **8 hours** of offline progress.\n'
+        '**3️⃣ RETURN & GROW STRONGER** — Press **🔄 Refresh**, claim rewards, upgrade gear and fight bosses.\n\n'
+        '## 🧭 THE SIX HOME BUTTONS\n'
+        '🔄 **Refresh** — Process idle battles and see your latest rewards.\n'
+        '🏰 **Dungeon** — Boss Battle, Treasure Goblin, Mystery Chambers and Abyss Portals.\n'
+        '🧙 **Hero** — Inventory, Enchanting, Relic Collection, Companions and Skill Tree.\n'
+        '🏰 **Kingdom** — Blacksmith, Adventurer Camp and Travelling Merchant.\n'
+        '🎯 **Activities** — Wheel of Fortune, Quest Board, Daily Bounty, Gauntlet, Arena Trials and Treasure Vault.\n'
+        '📖 **Info** — This Help guide and the Leaderboard.\n\n'
+        '## 🏰 DUNGEON DISCOVERIES\n'
+        '🐉 **Boss Battle** — Legendary boss every 50 floors. Receive a one-time DM when a new boss checkpoint is discovered on check-in. Use Attack, Guard, Power Strike or Second Wind.\n'
+        '👹 **Treasure Goblin** — Personal clue challenge every six hours, with two attempts; DM alert on check-in.\n'
+        '🏰 **Mystery Chambers** — Discover while climbing; choose an encounter reward. DM alert on check-in.\n'
+        '🌀 **Abyss Portals** — Optional three-stage Blood, Golden or Mystic routes; DM alert on check-in.\n\n'
+        '## 🧙 HERO & EQUIPMENT\n'
+        '🎒 **Inventory** — Up to 20 weapons and 20 armour pieces. Compare, equip, lock or dismantle; auto-equip is optional.\n'
+        '✨ **Enchanting** — Character-bound bonuses persist when weapons auto-switch; changing costs 1,200 gold + 15 materials.\n'
+        '💍 **Relics** — Collect from portals and equip one permanent passive bonus.\n'
+        '🐾 **Companions** — Unlock, equip and upgrade your companion.\n'
+        '🌳 **Skill Tree** — One point per five levels, with free resets.\n\n'
+        '## 🏰 KINGDOM & 🎯 ACTIVITIES\n'
+        '⚒️ **Blacksmith** — Upgrade weapon/armour to +10; refine from Floor 100.\n'
+        '🏕️ **Camp** — Train Attack, Defence or Gold for 60 minutes, or rest to restore HP.\n'
+        '🧙 **Merchant** — Shop rotates every six hours.\n'
+        '🎡 **Wheel** — One spin every six hours.\n'
+        '📜 **Quest Board** — Three daily objectives unlock a bonus chest.\n'
+        '🎯 **Activities** — Claim Daily Bounty, play Gauntlet, use three daily Arena attempts and spend Vault Keys.\n\n'
+        '## 💡 TIPS\n'
+        '💰 Stuck? Your hero farms resources and heals. Every ten floors grants a milestone chest.\n'
+        '🏠 **Home** returns to the six-button hub; **⬅️ Back** returns to the previous category.\n'
+        '🏆 Highest floor after seven days wins; ties go to whoever reached it first.'
+    ),color=PURPLE)
+    e.add_field(name='🎁 PRIZES',value=prize_text(),inline=False)
+    e.set_footer(text='Only /play is required • Button menus edit the same private panel')
     return e
+
+CATEGORY_SCREENS = {
+    'dungeon': ('🏰 DUNGEON', '🔄 Refresh your climb, defeat bosses and explore discoveries.\nYour hero continues climbing automatically while you explore menus.'),
+    'hero': ('🧙 HERO', '🎒 Manage equipment, enchantments, relics, companions and skill points.'),
+    'kingdom': ('🏰 KINGDOM', '⚒️ Visit the Blacksmith, Adventurer Camp or Travelling Merchant.'),
+    'activities_menu': ('🎯 ACTIVITIES', '🎡 Spin the wheel, complete daily quests, claim bounties and enter the Arena.'),
+    'info': ('📖 INFORMATION', '📘 Read the guide or check the competition leaderboard.'),
+}
+SCREEN_PARENT = {
+    'boss':'dungeon','goblin':'dungeon','chamber':'dungeon','portal':'dungeon',
+    'inventory':'hero','enchant':'hero','relics':'hero','pets':'hero','skills':'hero',
+    'smith':'kingdom','camp':'kingdom','merchant':'kingdom',
+    'activities':'activities_menu','arena':'activities_menu','wheel':'activities_menu','quests':'activities_menu',
+}
 
 def player_embed(s, notice='', screen='home'):
     titles = {'home': '🏰⚔️ YOUR DUNGEON ADVENTURE', 'smith': '⚒️🔥 THE ROYAL BLACKSMITH',
-              'activities': '🎯✨ QUESTS & TREASURE', 'wheel':'🎡✨ WHEEL OF FORTUNE', 'quests':'📜✨ DAILY QUEST BOARD', 'chamber': '🏰✨ MYSTERY CHAMBER', 'arena':'🏟️⚔️ ARENA TRIALS', 'pets':'🐾✨ COMPANIONS', 'skills':'🌳✨ SKILL TREE', 'merchant':'🧙🛒 TRAVELLING MERCHANT', 'goblin':'👹💰 TREASURE GOBLIN', 'boss': '🐉🔥 LEGENDARY BOSS', 'inventory':'🎒⚔️ HERO INVENTORY', 'enchant':'✨ WEAPON ENCHANTING'}
+              'activities': '🎯✨ QUESTS & TREASURE', 'wheel':'🎡✨ WHEEL OF FORTUNE', 'quests':'📜✨ DAILY QUEST BOARD', 'chamber': '🏰✨ MYSTERY CHAMBER', 'arena':'🏟️⚔️ ARENA TRIALS', 'pets':'🐾✨ COMPANIONS', 'skills':'🌳✨ SKILL TREE', 'merchant':'🧙🛒 TRAVELLING MERCHANT', 'goblin':'👹💰 TREASURE GOBLIN', 'boss': '🐉🔥 LEGENDARY BOSS', 'inventory':'🎒⚔️ HERO INVENTORY', 'enchant':'✨ WEAPON ENCHANTING', **{key: value[0] for key, value in CATEGORY_SCREENS.items()}}
     e = discord.Embed(title=titles.get(screen, titles['home']), description=stats(s), color=GOLD if screen=='home' else PURPLE)
     if screen=='home':
         if s.get('chambers'):
-            e.add_field(name='🚨🏰 MYSTERY CHAMBER DISCOVERED!',value=f'**{len(s["chambers"])} unclaimed chamber(s)!** Tap 🏰 Mystery Chamber to explore. Your hero keeps climbing!',inline=False)
-        e.add_field(name='👹 TREASURE GOBLIN',value='A personal goblin appears every **6 hours**. Check the Goblin menu to solve its clue and claim your loot!',inline=False)
+            e.add_field(name='🚨🏰 MYSTERY CHAMBER DISCOVERED!',value=f'**{len(s["chambers"])} unclaimed chamber(s)!** Open **🏰 Dungeon → Mystery Chamber** to explore. Your hero keeps climbing!',inline=False)
+        e.add_field(name='👹 TREASURE GOBLIN',value='A personal goblin appears every **6 hours**. Open **🏰 Dungeon → Treasure Goblin** to solve its clue and claim your loot!',inline=False)
         e.add_field(name='🎡 DAILY ACTIVITIES',value='🎡 **Wheel of Fortune** — spin every 6 hours.\n📜 **Quest Board** — 3 daily goals and a bonus chest.',inline=False)
         e.add_field(name='🗺️ YOUR ADVENTURE',
                     value=('🔴 **A LEGENDARY BOSS IS WAITING!** Open **🐉 Boss Battle**.' if s['boss']
@@ -129,9 +144,11 @@ def player_embed(s, notice='', screen='home'):
         e.add_field(name='🗡️ EQUIPMENT',
                     value=(f'⚔️ **{s["weapon"]["name"]}**  +{s["weapon"]["plus"]} · R{s["weapon"]["refine"]}\n'
                            f'🛡️ **{s["armour"]["name"]}**  +{s["armour"]["plus"]} · R{s["armour"]["refine"]}'), inline=False)
-        e.add_field(name='🚀 WHAT TO DO NEXT',
-                    value='**1.** 🔄 Refresh to claim progress.\n**2.** ⚒️ Upgrade gear; 🌳 spend skill points.\n**3.** 🐾 Equip a companion; 🏟️ try the Arena.\n**4.** 🐉 Fight bosses and 🏰 explore chambers.', inline=False)
+        e.add_field(name='🚀 QUICK NAVIGATION',
+                    value='**🔄 Refresh** — Collect idle progress.\n**🏰 Dungeon** — Bosses, Goblins, Chambers & Portals.\n**🧙 Hero** — Inventory, Enchanting, Relics, Pets & Skills.\n**🏰 Kingdom** — Blacksmith, Camp & Merchant.\n**🎯 Activities** — Wheel, Quests, Arena & Bounty.\n**📖 Info** — Help & Leaderboard.',inline=False)
         e.add_field(name='📜 LATEST ADVENTURE REPORT', value=(notice or s.get('last_report') or 'Your journey begins!')[:1024], inline=False)
+    elif screen in CATEGORY_SCREENS:
+        e.add_field(name='🧭 SELECT A DESTINATION', value=CATEGORY_SCREENS[screen][1], inline=False)
     elif screen=='inventory':
         game.ensure_gear(s)
         weapon,armour=game.gear_bag(s,'weapon'),game.gear_bag(s,'armour')
@@ -245,6 +262,45 @@ async def send_private(interaction, *, embed=None, view=None, content=None):
     else:
         await interaction.response.send_message(content=content, embed=embed, view=view, ephemeral=True)
 
+async def notify_boss(user, state):
+    """Notify once per legendary boss floor when progress is processed.
+
+    Bosses are generated during /play or Refresh, not by a background worker.
+    A stored checkpoint prevents duplicate DMs after a failed boss attempt.
+    """
+    boss = state.get('boss')
+    if not boss:
+        return
+    floor = int(boss.get('floor', 0))
+    if floor <= 0:
+        return
+    with game.open_db() as db:
+        db.execute('BEGIN IMMEDIATE')
+        try:
+            latest = game.get_player(db, user.id)
+            if not latest or not latest.get('boss') or int(latest['boss'].get('floor', 0)) != floor:
+                db.execute('COMMIT')
+                return
+            if int(latest.get('boss_dm_floor', 0)) >= floor:
+                db.execute('COMMIT')
+                return
+            latest['boss_dm_floor'] = floor
+            game.save_player(db, user.id, user.display_name, latest)
+            db.execute('COMMIT')
+        except Exception:
+            db.execute('ROLLBACK')
+            raise
+    try:
+        await user.send(
+            '🐉 **ABYSS ASCENSION — LEGENDARY BOSS AVAILABLE!**\n'
+            f'⚔️ A legendary boss is guarding **Floor {floor:,}**!\n'
+            '🏰 Your automatic climb is paused at this checkpoint until you defeat it.\n'
+            'Use **/play → 🏰 Dungeon → Boss Battle** to fight. '
+            'Your equipment and progress are safe if you lose!'
+        )
+    except (discord.Forbidden, discord.HTTPException):
+        logging.info('Could not DM boss notification to %s (DMs may be disabled)', user.id)
+
 async def notify_chambers(user, state):
     """DM once for newly discovered chambers, max once per 6 hours.
 
@@ -291,7 +347,7 @@ async def notify_goblin(user, state):
     try:
         await user.send('👹 **ABYSS ASCENSION — TREASURE GOBLIN!**\n'
                         'A goblin is hiding in your dungeon! You have until the end of this six-hour window to catch it.\n'
-                        'Use **/play → 👹 Treasure Goblin** to solve its clue. Two attempts available!')
+                        'Use **/play → 🏰 Dungeon → Treasure Goblin** to solve its clue. Two attempts available!')
     except (discord.Forbidden,discord.HTTPException):
         logging.info('Could not DM goblin notification to %s',user.id)
 
@@ -316,7 +372,7 @@ async def notify_portals(user, state):
     try:
         await user.send(f'🌀 **ABYSS ASCENSION — ABYSS PORTAL DISCOVERED!**\n'
                         f'You have **{count} portal(s)** waiting. Enter a three-stage mini-dungeon through '
-                        '**/play → 🌀 Abyss Portals**. Your normal climb continues!')
+                        '**/play → 🏰 Dungeon → Abyss Portals**. Your normal climb continues!')
     except (discord.Forbidden,discord.HTTPException):
         logging.info('Could not DM portal notification to %s',user.id)
 
@@ -331,6 +387,7 @@ async def show_player(interaction, screen='home', action=None):
             s, notice = (game.mutate(db, interaction.user.id, interaction.user.display_name, action)
                          if action else game.refresh(db, interaction.user.id, interaction.user.display_name))
         await interaction.edit_original_response(embed=player_embed(s, notice, screen), view=ChamberView(s) if screen=='chamber' else InventoryView(s) if screen=='inventory' else GameView(screen))
+        await notify_boss(interaction.user, s)
         await notify_chambers(interaction.user, s)
         await notify_goblin(interaction.user, s)
         await notify_portals(interaction.user, s)
@@ -358,93 +415,105 @@ class GameView(discord.ui.View):
         super().__init__(timeout=None)
         if screen=='home':
             buttons=[('Refresh','home','🔄',None,discord.ButtonStyle.success),
-                     ('Blacksmith','smith','⚒️',None,discord.ButtonStyle.primary),
-                     ('Activities','activities','🎯',None,discord.ButtonStyle.primary),
-                     ('Wheel','wheel','🎡',None,discord.ButtonStyle.success),
-                     ('Quest Board','quests','📜',None,discord.ButtonStyle.primary),
-                     ('Treasure Goblin','goblin','👹',None,discord.ButtonStyle.success),
-                     ('Inventory','inventory','🎒',None,discord.ButtonStyle.primary),
-                     ('Enchant','enchant','✨',None,discord.ButtonStyle.primary),
-                      ('Mystery Chamber','chamber','🏰',None,discord.ButtonStyle.success),
-                     ('Abyss Portals','portal','🌀',None,discord.ButtonStyle.success),
-                     ('Adventurer Camp','camp','🏕️',None,discord.ButtonStyle.primary),
-                     ('Relic Collection','relics','💍',None,discord.ButtonStyle.primary),
-                     ('Companions','pets','🐾',None,discord.ButtonStyle.primary),
-                     ('Skill Tree','skills','🌳',None,discord.ButtonStyle.primary),
-                     ('Merchant','merchant','🧙',None,discord.ButtonStyle.primary),
+                     ('Dungeon','dungeon','🏰',None,discord.ButtonStyle.primary),
+                     ('Hero','hero','🧙',None,discord.ButtonStyle.primary),
+                     ('Kingdom','kingdom','🏰',None,discord.ButtonStyle.primary),
+                     ('Activities','activities_menu','🎯',None,discord.ButtonStyle.primary),
+                     ('Info','info','📖',None,discord.ButtonStyle.secondary)]
+        elif screen=='dungeon':
+            buttons=[('Refresh','home','🔄',None,discord.ButtonStyle.success),
                      ('Boss Battle','boss','🐉',None,discord.ButtonStyle.danger),
-                     ('Help','help','📖',None,discord.ButtonStyle.secondary),
-                     ('Leaderboard','rankings','🏆',None,discord.ButtonStyle.secondary)]
+                     ('Treasure Goblin','goblin','👹',None,discord.ButtonStyle.success),
+                     ('Mystery Chamber','chamber','🏰',None,discord.ButtonStyle.primary),
+                     ('Abyss Portals','portal','🌀',None,discord.ButtonStyle.primary)]
+        elif screen=='hero':
+            buttons=[('Inventory','inventory','🎒',None,discord.ButtonStyle.primary),
+                     ('Enchant','enchant','✨',None,discord.ButtonStyle.primary),
+                     ('Relics','relics','💍',None,discord.ButtonStyle.primary),
+                     ('Companions','pets','🐾',None,discord.ButtonStyle.primary),
+                     ('Skill Tree','skills','🌳',None,discord.ButtonStyle.primary)]
+        elif screen=='kingdom':
+            buttons=[('Blacksmith','smith','⚒️',None,discord.ButtonStyle.primary),
+                     ('Adventurer Camp','camp','🏕️',None,discord.ButtonStyle.primary),
+                     ('Merchant','merchant','🧙',None,discord.ButtonStyle.primary)]
+        elif screen=='activities_menu':
+            buttons=[('Wheel','wheel','🎡',None,discord.ButtonStyle.success),
+                     ('Quest Board','quests','📜',None,discord.ButtonStyle.primary),
+                     ('Bounty & Vault','activities','🎯',None,discord.ButtonStyle.primary),
+                     ('Arena Trials','arena','⚔️',None,discord.ButtonStyle.primary)]
+        elif screen=='info':
+            buttons=[('Help','help','📖',None,discord.ButtonStyle.primary),
+                     ('Leaderboard','rankings','🏆',None,discord.ButtonStyle.primary)]
         elif screen=='inventory':
             buttons=[('Auto-Equip ON/OFF','inventory','🤖','gear_auto',discord.ButtonStyle.primary),
-                     ('Back to Home','home','🏠',None,discord.ButtonStyle.secondary)]
+                     ('Back','home','⬅️',None,discord.ButtonStyle.secondary)]
         elif screen=='enchant':
             buttons=[('Lifesteal','enchant','🩸','gear_enchant_lifesteal',discord.ButtonStyle.success),
                      ('Critical','enchant','⚡','gear_enchant_critical',discord.ButtonStyle.primary),
                      ('Boss Slayer','enchant','🐉','gear_enchant_boss',discord.ButtonStyle.primary),
                      ('Treasure Finder','enchant','💰','gear_enchant_treasure',discord.ButtonStyle.primary),
-                     ('Back to Home','home','🏠',None,discord.ButtonStyle.secondary)]
+                     ('Back','home','⬅️',None,discord.ButtonStyle.secondary)]
         elif screen=='portal':
             buttons=[('Enter Portal','portal','🌀','portal_enter',discord.ButtonStyle.success),
                      ('Blood Path','portal','🔴','portal_blood',discord.ButtonStyle.danger),
                      ('Golden Path','portal','🟡','portal_golden',discord.ButtonStyle.primary),
                      ('Mystic Path','portal','🔵','portal_mystic',discord.ButtonStyle.primary),
                      ('Leave Portal','portal','🚪','portal_leave',discord.ButtonStyle.secondary),
-                     ('Back to Home','home','🏠',None,discord.ButtonStyle.secondary)]
+                     ('Back','home','⬅️',None,discord.ButtonStyle.secondary)]
         elif screen=='camp':
             buttons=[('Train Attack','camp','⚔️','camp_attack',discord.ButtonStyle.primary),
                      ('Train Defence','camp','🛡️','camp_defence',discord.ButtonStyle.primary),
                      ('Treasure Prep','camp','💰','camp_gold',discord.ButtonStyle.primary),
                      ('Rest & Heal','camp','❤️','camp_rest',discord.ButtonStyle.success),
-                     ('Back to Home','home','🏠',None,discord.ButtonStyle.secondary)]
+                     ('Back','home','⬅️',None,discord.ButtonStyle.secondary)]
         elif screen=='relics':
             buttons=[('Ember Sigil','relics','🔥','relic_ember',discord.ButtonStyle.primary),
                      ('Guardian Charm','relics','🛡️','relic_ward',discord.ButtonStyle.primary),
                      ('Fortune Coin','relics','💰','relic_fortune',discord.ButtonStyle.primary),
                      ('Vitality Stone','relics','❤️','relic_vigor',discord.ButtonStyle.primary),
                      ('Unequip','relics','🚫','relic_unequip',discord.ButtonStyle.secondary),
-                     ('Back to Home','home','🏠',None,discord.ButtonStyle.secondary)]
+                     ('Back','home','⬅️',None,discord.ButtonStyle.secondary)]
         elif screen=='smith':
             buttons=[('Weapon +1','smith','⚔️','upgrade_weapon',discord.ButtonStyle.success),
                      ('Armour +1','smith','🛡️','upgrade_armour',discord.ButtonStyle.success),
                      ('Refine Weapon','smith','✨','refine_weapon',discord.ButtonStyle.primary),
                      ('Refine Armour','smith','💎','refine_armour',discord.ButtonStyle.primary),
-                     ('Back to Home','home','🏠',None,discord.ButtonStyle.secondary)]
+                     ('Back','home','⬅️',None,discord.ButtonStyle.secondary)]
         elif screen=='activities':
             buttons=[('Daily Bounty','activities','📜','daily',discord.ButtonStyle.success),
                      ('Gauntlet','activities','🏟️','challenge',discord.ButtonStyle.primary),
                      ('Arena Trials','arena','⚔️',None,discord.ButtonStyle.success),
                      ('Treasure Vault','activities','🗝️','vault',discord.ButtonStyle.primary),
-                     ('Back to Home','home','🏠',None,discord.ButtonStyle.secondary)]
+                     ('Back','home','⬅️',None,discord.ButtonStyle.secondary)]
         elif screen=='wheel':
-            buttons=[('Spin the Wheel','wheel','🎡','wheel',discord.ButtonStyle.success),('Back to Home','home','🏠',None,discord.ButtonStyle.secondary)]
+            buttons=[('Spin the Wheel','wheel','🎡','wheel',discord.ButtonStyle.success),('Back','home','⬅️',None,discord.ButtonStyle.secondary)]
         elif screen=='quests':
-            buttons=[('Claim Quest Chest','quests','🎁','quest_claim',discord.ButtonStyle.success),('Back to Home','home','🏠',None,discord.ButtonStyle.secondary)]
+            buttons=[('Claim Quest Chest','quests','🎁','quest_claim',discord.ButtonStyle.success),('Back','home','⬅️',None,discord.ButtonStyle.secondary)]
         elif screen=='goblin':
-            buttons=[('Answer 1','goblin','1️⃣','goblin_0',discord.ButtonStyle.primary),('Answer 2','goblin','2️⃣','goblin_1',discord.ButtonStyle.primary),('Answer 3','goblin','3️⃣','goblin_2',discord.ButtonStyle.primary),('Back to Home','home','🏠',None,discord.ButtonStyle.secondary)]
+            buttons=[('Answer 1','goblin','1️⃣','goblin_0',discord.ButtonStyle.primary),('Answer 2','goblin','2️⃣','goblin_1',discord.ButtonStyle.primary),('Answer 3','goblin','3️⃣','goblin_2',discord.ButtonStyle.primary),('Back','home','⬅️',None,discord.ButtonStyle.secondary)]
         elif screen=='arena':
             buttons=[('Easy','arena','🟢','arena_easy',discord.ButtonStyle.success),
                      ('Hard','arena','🟠','arena_hard',discord.ButtonStyle.primary),
                      ('Nightmare','arena','🔴','arena_nightmare',discord.ButtonStyle.danger),
-                     ('Back to Home','home','🏠',None,discord.ButtonStyle.secondary)]
+                     ('Back','home','⬅️',None,discord.ButtonStyle.secondary)]
         elif screen=='pets':
             buttons=[('Wolf','pets','🐺','pet_wolf',discord.ButtonStyle.primary),
                      ('Bear','pets','🐻','pet_bear',discord.ButtonStyle.primary),
                      ('Owl','pets','🦉','pet_owl',discord.ButtonStyle.primary),
                      ('Dragon','pets','🐉','pet_dragon',discord.ButtonStyle.primary),
                      ('Upgrade Active','pets','✨','pet_upgrade',discord.ButtonStyle.success),
-                     ('Back to Home','home','🏠',None,discord.ButtonStyle.secondary)]
+                     ('Back','home','⬅️',None,discord.ButtonStyle.secondary)]
         elif screen=='skills':
             buttons=[('Warrior +1','skills','⚔️','skill_warrior',discord.ButtonStyle.primary),
                      ('Defender +1','skills','🛡️','skill_defender',discord.ButtonStyle.primary),
                      ('Treasure +1','skills','💰','skill_treasure',discord.ButtonStyle.primary),
                      ('Free Reset','skills','🔁','skill_reset',discord.ButtonStyle.secondary),
-                     ('Back to Home','home','🏠',None,discord.ButtonStyle.secondary)]
+                     ('Back','home','⬅️',None,discord.ButtonStyle.secondary)]
         elif screen=='merchant':
             buttons=[('Buy Materials','merchant','🧱','merchant_materials',discord.ButtonStyle.success),
                      ('Buy Vault Key','merchant','🗝️','merchant_key',discord.ButtonStyle.primary),
                      ('Buy Gear','merchant','🎁','merchant_gear',discord.ButtonStyle.primary),
-                     ('Back to Home','home','🏠',None,discord.ButtonStyle.secondary)]
+                     ('Back','home','⬅️',None,discord.ButtonStyle.secondary)]
         elif screen=='chamber':
             buttons=[('Golden Door','chamber','🟡','chamber_gold',discord.ButtonStyle.success),
                      ('Crimson Door','chamber','🔴','chamber_crimson',discord.ButtonStyle.danger),
@@ -455,13 +524,22 @@ class GameView(discord.ui.View):
                      ('Attack Guardian','chamber','⚔️','chamber_attack',discord.ButtonStyle.danger),
                      ('Guard','chamber','🛡️','chamber_guard',discord.ButtonStyle.primary),
                      ('Retreat','chamber','🏃','chamber_retreat',discord.ButtonStyle.secondary),
-                     ('Back to Home','home','🏠',None,discord.ButtonStyle.secondary)]
+                     ('Back','home','⬅️',None,discord.ButtonStyle.secondary)]
         else:
             buttons=[('Attack','boss','⚔️','boss_attack',discord.ButtonStyle.primary),
                      ('Guard','boss','🛡️','boss_guard',discord.ButtonStyle.secondary),
                      ('Power Strike','boss','💥','boss_power',discord.ButtonStyle.danger),
                      ('Second Wind','boss','💚','boss_heal',discord.ButtonStyle.success),
-                     ('Back to Home','home','🏠',None,discord.ButtonStyle.secondary)]
+                     ('Back','home','⬅️',None,discord.ButtonStyle.secondary)]
+        if screen in CATEGORY_SCREENS:
+            buttons.append(('Home','home','🏠',None,discord.ButtonStyle.secondary))
+        elif screen in SCREEN_PARENT:
+            parent=SCREEN_PARENT[screen]
+            buttons=[(label,parent if label=='Back' else target,emoji,action,style)
+                     for label,target,emoji,action,style in buttons]
+            # Most submenus offer Back and Home; fit within Discord's five rows.
+            if len(buttons)<24:
+                buttons.append(('Home','home','🏠',None,discord.ButtonStyle.secondary))
         for label,screen,emoji,action,style in buttons:
             self.add_item(NavButton(label,screen,emoji=emoji,action=action,style=style))
 
@@ -522,7 +600,8 @@ class ChamberView(discord.ui.View):
                  'guardian':[('Attack Guardian','⚔️','attack'),('Guard','🛡️','guard'),('Retreat','🏃','retreat')]}.get(kind,[])
         for label,emoji,action in options:
             self.add_item(NavButton(label,'chamber',emoji=emoji,action='chamber_'+action,style=discord.ButtonStyle.primary))
-        self.add_item(NavButton('Back to Home','home',emoji='🏠'))
+        self.add_item(NavButton('Back','dungeon',emoji='⬅️'))
+        self.add_item(NavButton('Home','home',emoji='🏠'))
 
 class HelpView(discord.ui.View):
     def __init__(self):
@@ -605,7 +684,10 @@ async def play(interaction:discord.Interaction,panel:bool=False):
     if s:
         with game.open_db() as db:s,notice=game.refresh(db,interaction.user.id,interaction.user.display_name)
         await send_private(interaction,embed=player_embed(s,notice),view=GameView())
+        await notify_boss(interaction.user,s)
         await notify_chambers(interaction.user,s)
+        await notify_goblin(interaction.user,s)
+        await notify_portals(interaction.user,s)
     else:
         await send_private(interaction,embed=discord.Embed(
             title='🏰⚔️ WELCOME TO ABYSS ASCENSION!',
@@ -613,7 +695,7 @@ async def play(interaction:discord.Interaction,panel:bool=False):
 
 @bot.event
 async def setup_hook():
-    for view in (JoinView(),ClassView(),GameView('home'),GameView('smith'),GameView('activities'),
+    for view in (JoinView(),ClassView(),GameView('home'),GameView('dungeon'),GameView('hero'),GameView('kingdom'),GameView('activities_menu'),GameView('info'),GameView('smith'),GameView('activities'),
                  GameView('boss'),GameView('arena'),GameView('pets'),GameView('skills'),GameView('merchant'),GameView('wheel'),GameView('quests'),GameView('enchant'),HelpView(),RankingsView()):
         bot.add_view(view)
     if GUILD_ID:
