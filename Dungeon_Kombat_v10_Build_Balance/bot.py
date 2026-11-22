@@ -10,8 +10,16 @@ import game
 logging.basicConfig(level=logging.INFO)
 TOKEN = os.getenv('DISCORD_TOKEN', '').strip()
 GUILD_ID = os.getenv('GUILD_ID', '').strip()
-ROLE_ID = os.getenv('DISCORD_ROLE_ID', '').strip()
+ROLE_ID = os.getenv('DISCORD_ROLE_ID', '1574002249099644970').strip()
 GAME_CHANNEL_ID = int(os.getenv('GAME_CHANNEL_ID', '0') or 0)
+BOT_OPERATOR_ID = int(os.getenv('BOT_OPERATOR_ID', '0') or 0)
+
+def can_publish_panel(interaction):
+    # A designated operator can publish without Manage Server. Never allow everyone.
+    return bool(interaction.guild and (
+        (BOT_OPERATOR_ID and interaction.user.id == BOT_OPERATOR_ID) or
+        (isinstance(interaction.user, discord.Member) and interaction.user.guild_permissions.manage_guild)
+    ))
 intents = discord.Intents.default()
 bot = commands.Bot(command_prefix='!', intents=intents)
 GOLD = discord.Color.from_rgb(245, 184, 66)
@@ -820,10 +828,12 @@ class JoinButton(discord.ui.Button):
         super().__init__(label='⚔️ JOIN ABYSS ASCENSION ⚔️',style=discord.ButtonStyle.success,
                          custom_id='climber:v2:join',row=0)
     async def callback(self,interaction):
+        # Grant the configured participant role as soon as Join is clicked,
+        # including before first-time players choose a hero class.
+        await assign_role(interaction)
         with game.open_db() as db:
             existing=game.get_player(db,interaction.user.id)
         if existing:
-            await assign_role(interaction)
             return await send_private(interaction,embed=player_embed(existing),view=GameView())
         await send_private(interaction,embed=discord.Embed(
             title='🧙✨ CREATE YOUR HERO!',
@@ -869,6 +879,22 @@ class ResetGameConfirmView(discord.ui.View):
         self.stop()
 
 
+# Restrict every Abyss Ascension slash command to the configured game channel.
+# This check applies to /play, /publishpanel, /resetgame and future tree commands.
+async def game_channel_only(interaction: discord.Interaction) -> bool:
+    if not GAME_CHANNEL_ID or interaction.channel_id == GAME_CHANNEL_ID:
+        return True
+    message = f'🎮 Abyss Ascension commands work only in <#{GAME_CHANNEL_ID}>.'
+    if not interaction.response.is_done():
+        await interaction.response.send_message(message, ephemeral=True)
+    else:
+        await interaction.followup.send(message, ephemeral=True)
+    return False
+
+# discord.py invokes this hook for all application commands.
+bot.tree.interaction_check = game_channel_only
+
+
 @bot.tree.command(name='resetgame', description='ADMIN ONLY: erase all game progress and restart the event')
 @app_commands.guild_only()
 @app_commands.default_permissions(manage_guild=True)
@@ -888,14 +914,26 @@ async def resetgame(interaction: discord.Interaction):
         view=ResetGameConfirmView(interaction.user.id), ephemeral=True)
 
 
+@bot.tree.command(name='publishpanel', description='Publish the Abyss Ascension join panel (bot operator only)')
+@app_commands.guild_only()
+async def publishpanel(interaction: discord.Interaction):
+    if GAME_CHANNEL_ID and interaction.channel_id != GAME_CHANNEL_ID:
+        await interaction.response.send_message(f'🎮 Publish the panel in <#{GAME_CHANNEL_ID}>.', ephemeral=True)
+        return
+    if not can_publish_panel(interaction):
+        await interaction.response.send_message('🔒 Only the designated bot operator or a server manager can publish the panel. Configure BOT_OPERATOR_ID in Railway.', ephemeral=True)
+        return
+    await interaction.response.send_message(embed=panel_embed(), view=JoinView())
+
+
 @bot.tree.command(name='play',description='Play Abyss Ascension or publish the public join panel')
-@app_commands.describe(panel='Publish the large public join panel (server administrators only)')
+@app_commands.describe(panel='Publish the public join panel (designated bot operator or server manager)')
 async def play(interaction:discord.Interaction,panel:bool=False):
     if GAME_CHANNEL_ID and interaction.channel_id != GAME_CHANNEL_ID:
         return await interaction.response.send_message(f'🎮 Please use <#{GAME_CHANNEL_ID}> for Abyss Ascension.', ephemeral=True)
     if panel:
-        if not interaction.guild or not isinstance(interaction.user,discord.Member) or not interaction.user.guild_permissions.manage_guild:
-            return await send_private(interaction,content='🔒 Only server administrators with Manage Server can publish the join panel.')
+        if not can_publish_panel(interaction):
+            return await send_private(interaction,content='🔒 Only the designated bot operator or a server manager can publish the join panel. Set BOT_OPERATOR_ID in Railway to your Discord user ID.')
         await interaction.response.send_message(embed=panel_embed(),view=JoinView())
         return
     with game.open_db() as db:
