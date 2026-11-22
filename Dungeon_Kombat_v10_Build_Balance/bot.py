@@ -11,6 +11,7 @@ logging.basicConfig(level=logging.INFO)
 TOKEN = os.getenv('DISCORD_TOKEN', '').strip()
 GUILD_ID = os.getenv('GUILD_ID', '').strip()
 ROLE_ID = os.getenv('DISCORD_ROLE_ID', '').strip()
+GAME_CHANNEL_ID = int(os.getenv('GAME_CHANNEL_ID', '0') or 0)
 intents = discord.Intents.default()
 bot = commands.Bot(command_prefix='!', intents=intents)
 GOLD = discord.Color.from_rgb(245, 184, 66)
@@ -23,13 +24,13 @@ PRIZES = ('🥇 **1ST PLACE** — **200c + HC Box**',
 def event_text(db):
     start, end = game.event_window(db)
     if end is None:
-        return '⏳ The 7-day countdown begins when the first hero joins.'
+        return '⏳ Event dates have not been configured.'
     now = game.utcnow()
     if now < start:
-        return f'🗓️ Starts <t:{int(start)}:F>'
+        return f'🟢 **Starts:** <t:{int(start)}:F> · **<t:{int(start)}:R>**\n🏁 **Ends:** <t:{int(end)}:F>'
     if now >= end:
-        return '🏁 **EVENT ENDED** — Final rankings are locked.'
-    return f'⏰ **Ends <t:{int(end)}:F>** · <t:{int(end)}:R>'
+        return f'🏁 **EVENT ENDED** — <t:{int(end)}:F> · Final rankings are locked.'
+    return f'🟢 **Started:** <t:{int(start)}:F>\n⏰ **Ends:** <t:{int(end)}:F> · **<t:{int(end)}:R>**'
 
 def prize_text():
     return '\n'.join(PRIZES)
@@ -42,12 +43,13 @@ def panel_embed():
         description=(
             '# 🐉 ENTER THE DUNGEON!\n'
             '## 💥 CLIMB. FIGHT. CONQUER. 💥\n'
-            '**SEVEN DAYS. ENDLESS FLOORS. THREE CHAMPIONS.**\n\n'
+            '**EIGHT DAYS. ENDLESS FLOORS. THREE CHAMPIONS.**\n\n'
             '⚔️ Create your hero and automatically fight your way through the dungeon.\n'
             '🛡️ Collect powerful equipment and upgrade it at the Blacksmith.\n'
             '🐲 Defeat legendary bosses and conquer higher floors.\n'
             '🏆 Reach the **highest floor** to claim the top prizes!\n\n'
             '## 🎁 WIN THESE PRIZES!\n' + prize_text() + '\n\n'
+            '## 📅 EVENT DATES\n**Starts:** 23 November 2026 · 12:00 AM GMT\n**Ends:** 1 December 2026 · 12:00 AM GMT\n\n'
             '## 🚀 READY TO JOIN?\n'
             '**👇 PRESS THE BIG GREEN JOIN BUTTON BELOW! 👇**\n'
             '*No complicated setup — choose your class and your hero starts climbing.*'
@@ -77,7 +79,7 @@ def rankings_embed():
 
 def help_embed():
     e = discord.Embed(title='📖⚔️ ABYSS ASCENSION — HELP & QUICK START', description=(
-        '## 🚀 QUICK START — 3 STEPS\n'
+        '## 📅 EVENT DATES\n**23 November 2026, 00:00 GMT → 1 December 2026, 00:00 GMT.** The join panel displays a live Discord countdown.\n\n## 🚀 QUICK START — 3 STEPS\n'
         '**1️⃣ CREATE YOUR HERO** — Berserker ⚔️, Guardian 🛡️ or Rogue 🗡️.\n'
         '**2️⃣ CLIMB & PLAY** — Passive battles process every **45 seconds** (up to **8 hours** offline), but grant less XP. Expeditions and trials give meaningful active progress.\n'
         '**3️⃣ RETURN & GROW STRONGER** — Press **🔄 Refresh**, claim rewards, upgrade gear and fight bosses.\n'
@@ -858,7 +860,7 @@ class ResetGameConfirmView(discord.ui.View):
         logging.warning('Full Abyss Ascension reset by admin %s; %s player saves removed', interaction.user.id, removed)
         await interaction.edit_original_response(content=(
             f'✅ **Abyss Ascension has been reset.** Removed **{removed}** player saves, leaderboard entries and journal records. '
-            'The seven-day countdown will restart when the next player joins, unless `EVENT_START_UTC` is set.'), view=None)
+            'The configured event dates remain in effect after reset.'), view=None)
         self.stop()
 
     @discord.ui.button(label='Cancel', style=discord.ButtonStyle.secondary, emoji='✖️')
@@ -880,8 +882,8 @@ async def resetgame(interaction: discord.Interaction):
         '⚠️ **FULL GAME RESET — IRREVERSIBLE**\n\n'
         f'This will permanently erase **{player_count}** player saves, all inventory, floors, levels, '
         'leaderboard progress and Adventurer Log history. It also clears the database event start, '
-        'so the seven-day countdown begins again when the next player joins.\n\n'
-        '**This does not remove a configured `EVENT_START_UTC` environment variable.**\n\n'
+        'but configured event dates remain unchanged.\n\n'
+        '**Configured `EVENT_START_UTC` and `EVENT_END_UTC` dates remain unchanged.**\n\n'
         'Confirm below within 60 seconds, or cancel.',
         view=ResetGameConfirmView(interaction.user.id), ephemeral=True)
 
@@ -889,6 +891,8 @@ async def resetgame(interaction: discord.Interaction):
 @bot.tree.command(name='play',description='Play Abyss Ascension or publish the public join panel')
 @app_commands.describe(panel='Publish the large public join panel (server administrators only)')
 async def play(interaction:discord.Interaction,panel:bool=False):
+    if GAME_CHANNEL_ID and interaction.channel_id != GAME_CHANNEL_ID:
+        return await interaction.response.send_message(f'🎮 Please use <#{GAME_CHANNEL_ID}> for Abyss Ascension.', ephemeral=True)
     if panel:
         if not interaction.guild or not isinstance(interaction.user,discord.Member) or not interaction.user.guild_permissions.manage_guild:
             return await send_private(interaction,content='🔒 Only server administrators with Manage Server can publish the join panel.')
@@ -956,6 +960,20 @@ async def setup_hook():
         await bot.tree.sync(guild=guild)
     else:
         await bot.tree.sync()
+
+@bot.event
+async def on_message(message: discord.Message):
+    # Slash commands and button interactions are not normal chat messages.
+    # Never delete bot/webhook messages, so the public role panel remains intact.
+    if GAME_CHANNEL_ID and message.guild and message.channel.id == GAME_CHANNEL_ID and not message.author.bot and not message.webhook_id:
+        try:
+            await message.delete()
+        except discord.Forbidden:
+            logging.warning('Missing Manage Messages permission in game channel %s', GAME_CHANNEL_ID)
+        except discord.HTTPException:
+            logging.exception('Could not delete a text message in game channel')
+        return
+    await bot.process_commands(message)
 
 @bot.event
 async def on_ready():
