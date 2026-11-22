@@ -3,6 +3,7 @@ import logging
 import time
 from datetime import datetime, timezone
 import os
+import re
 import discord
 from discord import app_commands
 from discord.ext import commands, tasks
@@ -77,7 +78,7 @@ def ensure_panel_schema(db):
 def joined_count(db):
     ensure_panel_schema(db)
     # Include heroes created before this feature was introduced.
-    return db.execute('''SELECT COUNT(*) FROM (SELECT user_id FROM players UNION SELECT user_id FROM panel_joins)''').fetchone()[0]
+    return db.execute('SELECT COUNT(*) FROM panel_joins').fetchone()[0]
 
 
 def record_join(db, uid):
@@ -94,7 +95,7 @@ async def refresh_join_panels(interaction=None):
         try:
             channel = bot.get_channel(panel['channel_id']) or await bot.fetch_channel(panel['channel_id'])
             message = await channel.fetch_message(panel['message_id'])
-            await message.edit(embed=panel_embed())
+            await message.edit(embed=panel_embed(), view=JoinView())
         except (discord.NotFound, discord.Forbidden, discord.HTTPException):
             logging.warning('Could not update join counter on panel %s', panel['message_id'])
         except Exception:
@@ -131,14 +132,14 @@ def panel_embed():
             '🔥 **Every floor counts. Every upgrade matters.**\n'
             'The higher you climb, the closer you get to victory.\n\n'
             '⚡ **REGISTER NOW — THE DUNGEON OPENS AT 6 PM GMT!**\n'
-            '👇 **PRESS JOIN ABYSS ASCENSION BELOW** 👇'
+            '👇 **CLICK JOIN TO REGISTER — OR LEAVE TO WITHDRAW** 👇'
         ), color=GOLD)
     e.add_field(name='👥 ADVENTURERS JOINED', value=f'**{joined:,} players** have entered the competition!', inline=False)
     e.add_field(name='📅 EVENT SCHEDULE', value=(
         '**Starts:** 23 November 2026 at 6:00 PM GMT\n'
         '**Ends:** 1 December 2026 at 6:00 PM GMT\n' + status), inline=False)
     e.add_field(name='🎮 HOW TO JOIN', value=(
-        '**1️⃣ Click Join below** to receive your participant role.\n'
+        '**1️⃣ Click Join** to receive your participant role (or Leave to withdraw).\n'
         '**2️⃣ Wait until 23 November at 6:00 PM GMT.** No game starts yet.\n'
         '**3️⃣ At 6:00 PM GMT**, a new Start Playing panel appears in the game channel.\n'
         '**4️⃣ Click Start Playing** there to choose your hero and begin climbing!'), inline=False)
@@ -872,13 +873,31 @@ class RankingsView(discord.ui.View):
 
 async def assign_role(interaction):
     if not ROLE_ID or not interaction.guild:
-        return
+        return False
     try:
         role = interaction.guild.get_role(int(ROLE_ID))
-        if role and isinstance(interaction.user, discord.Member) and role not in interaction.user.roles:
-            await interaction.user.add_roles(role, reason='Joined Abyss Ascension')
+        if role is None or not isinstance(interaction.user, discord.Member):
+            return False
+        if role not in interaction.user.roles:
+            await interaction.user.add_roles(role, reason='Registered for Abyss Ascension')
+        return True
     except (discord.Forbidden, discord.HTTPException, ValueError):
-        logging.warning('Could not assign Abyss Ascension role; check Manage Roles and hierarchy')
+        logging.exception('Could not assign Abyss Ascension role; check Manage Roles and role hierarchy')
+        return False
+
+async def remove_role(interaction):
+    if not ROLE_ID or not interaction.guild:
+        return False
+    try:
+        role = interaction.guild.get_role(int(ROLE_ID))
+        if role is None or not isinstance(interaction.user, discord.Member):
+            return False
+        if role in interaction.user.roles:
+            await interaction.user.remove_roles(role, reason='Left Abyss Ascension registration')
+        return True
+    except (discord.Forbidden, discord.HTTPException, ValueError):
+        logging.exception('Could not remove Abyss Ascension role')
+        return False
 
 class HeroSelect(discord.ui.Select):
     def __init__(self):
@@ -910,19 +929,39 @@ class ClassView(discord.ui.View):
 
 class JoinButton(discord.ui.Button):
     def __init__(self):
-        super().__init__(label='⚔️ JOIN ABYSS ASCENSION ⚔️',style=discord.ButtonStyle.success,
-                         custom_id='climber:v2:join',row=0)
-    async def callback(self,interaction):
-        # Registration only: do NOT create or open a character here.
-        await assign_role(interaction)
+        super().__init__(label='⚔️ JOIN ABYSS ASCENSION', style=discord.ButtonStyle.success,
+                         custom_id='climber:v2:join', row=0)
+    async def callback(self, interaction):
+        # Registration only; no character creation or game navigation.
+        if not await assign_role(interaction):
+            await interaction.response.send_message(
+                '⚠️ I could not give you the participant role. Please ask a server manager to check my Manage Roles permission and role hierarchy.', ephemeral=True)
+            return
         with game.open_db() as db:
             record_join(db, interaction.user.id)
         await interaction.response.send_message(
             f'✅ **You are registered for Abyss Ascension!**\n'
-            f'Your participant role has been requested. The game begins <t:{int(LAUNCH_AT)}:F> '
+            f'Your participant role has been assigned. The game begins <t:{int(LAUNCH_AT)}:F> '
             f'(<t:{int(LAUNCH_AT)}:R>).\n\n'
             f'🎮 Watch <#{GAME_CHANNEL_ID}> for the **Start Playing** panel at 6:00 PM GMT. '
-            'Click that new button to choose your hero and begin. Nothing starts yet.', ephemeral=True)
+            'Click that button to begin once the event is live.', ephemeral=True)
+        await refresh_join_panels(interaction)
+
+class LeaveButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(label='🚪 LEAVE EVENT', style=discord.ButtonStyle.danger,
+                         custom_id='climber:v5:leave_registration', row=0)
+    async def callback(self, interaction):
+        if not await remove_role(interaction):
+            await interaction.response.send_message(
+                '⚠️ I could not remove your participant role. Please ask a server manager to check my Manage Roles permission.', ephemeral=True)
+            return
+        with game.open_db() as db:
+            ensure_panel_schema(db)
+            db.execute('DELETE FROM panel_joins WHERE user_id=?', (interaction.user.id,))
+        await interaction.response.send_message(
+            '✅ You have left the Abyss Ascension registration list and your participant role has been removed. You can rejoin any time using Join.',
+            ephemeral=True)
         await refresh_join_panels(interaction)
 
 class LaunchJoinButton(discord.ui.Button):
@@ -996,8 +1035,7 @@ class JoinView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
         self.add_item(JoinButton())
-        self.add_item(NavButton('HOW TO PLAY','help',emoji='📖',style=discord.ButtonStyle.primary))
-        self.add_item(NavButton('VIEW PRIZES & LEADERBOARD','rankings',emoji='🏆'))
+        self.add_item(LeaveButton())
 
 class ResetProgressConfirmView(discord.ui.View):
     def __init__(self, owner_id: int):
@@ -1071,7 +1109,7 @@ async def game_channel_only(interaction: discord.Interaction) -> bool:
     command_name = getattr(getattr(interaction, 'command', None), 'name', None)
     if command_name in ('resetprogress', 'resetgame'):
         return True
-    if command_name == 'publishpanel':
+    if command_name in ('publishpanel', 'updatepanel'):
         return True
     if command_name == 'play' and getattr(interaction.namespace, 'panel', False) is True:
         return True
@@ -1121,6 +1159,39 @@ async def resetgame(interaction: discord.Interaction):
         '**Configured `EVENT_START_UTC` and `EVENT_END_UTC` dates remain unchanged.**\n\n'
         'Confirm below within 60 seconds, or cancel.',
         view=ResetGameConfirmView(interaction.user.id), ephemeral=True)
+
+
+@bot.tree.command(name='updatepanel', description='Edit an existing bot panel in place using its Discord message link')
+@app_commands.guild_only()
+@app_commands.describe(message_link='Copy Message Link from the existing bot panel you want to replace')
+async def updatepanel(interaction: discord.Interaction, message_link: str):
+    if not can_publish_panel(interaction):
+        await interaction.response.send_message('🔒 Only the configured bot operator or a server manager can update panels.', ephemeral=True)
+        return
+    match = re.fullmatch(r'https?://(?:canary\.|ptb\.)?discord(?:app)?\.com/channels/(\d+)/(\d+)/(\d+)/?', message_link.strip())
+    if not match:
+        await interaction.response.send_message('⚠️ Paste the full Discord message link (right-click the panel → Copy Message Link).', ephemeral=True)
+        return
+    guild_id, channel_id, message_id = map(int, match.groups())
+    if guild_id != interaction.guild_id:
+        await interaction.response.send_message('⚠️ That message is not in this server.', ephemeral=True)
+        return
+    await interaction.response.defer(ephemeral=True)
+    try:
+        channel = bot.get_channel(channel_id) or await bot.fetch_channel(channel_id)
+        message = await channel.fetch_message(message_id)
+        if message.author.id != bot.user.id:
+            await interaction.followup.send('⚠️ I can only edit messages posted by this bot.', ephemeral=True)
+            return
+        await message.edit(content=None, embed=panel_embed(), view=JoinView())
+        with game.open_db() as db:
+            ensure_panel_schema(db)
+            db.execute('INSERT OR REPLACE INTO published_panels(guild_id,channel_id,message_id) VALUES(?,?,?)',
+                       (guild_id, channel_id, message_id))
+        await interaction.followup.send('✅ Existing panel updated in place with **Join** and **Leave** buttons. No new panel was posted.', ephemeral=True)
+    except (discord.Forbidden, discord.NotFound, discord.HTTPException):
+        logging.exception('Failed to edit existing panel')
+        await interaction.followup.send('⚠️ Could not edit that panel. Check the message link and my access to the channel.', ephemeral=True)
 
 
 @bot.tree.command(name='publishpanel', description='Publish the Abyss Ascension join panel (bot operator only)')
