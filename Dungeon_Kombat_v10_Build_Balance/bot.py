@@ -43,28 +43,71 @@ def event_text(db):
 def prize_text():
     return '\n'.join(PRIZES)
 
+def joined_count(db):
+    # Include heroes created before this feature was introduced.
+    return db.execute('''SELECT COUNT(*) FROM (SELECT user_id FROM players UNION SELECT user_id FROM panel_joins)''').fetchone()[0]
+
+
+def record_join(db, uid):
+    db.execute('INSERT OR IGNORE INTO panel_joins(user_id) VALUES (?)', (uid,))
+
+
+async def refresh_join_panels(interaction=None):
+    """Refresh all known published panels; a failed edit must not block joining."""
+    with game.open_db() as db:
+        panels = db.execute('SELECT guild_id, channel_id, message_id FROM published_panels').fetchall()
+    for panel in panels:
+        try:
+            channel = bot.get_channel(panel['channel_id']) or await bot.fetch_channel(panel['channel_id'])
+            message = await channel.fetch_message(panel['message_id'])
+            await message.edit(embed=panel_embed())
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+            logging.warning('Could not update join counter on panel %s', panel['message_id'])
+        except Exception:
+            logging.exception('Unexpected join counter refresh error')
+
+
+async def publish_join_panel(interaction):
+    await interaction.response.send_message(embed=panel_embed(), view=JoinView())
+    try:
+        message = await interaction.original_response()
+        with game.open_db() as db:
+            db.execute('INSERT OR REPLACE INTO published_panels(guild_id,channel_id,message_id) VALUES(?,?,?)',
+                       (interaction.guild_id, interaction.channel_id, message.id))
+    except Exception:
+        logging.exception('Failed to register join panel for automatic counter updates')
+
+
 def panel_embed():
     with game.open_db() as db:
         status = event_text(db)
+        joined = joined_count(db)
     e = discord.Embed(
-        title='⚔️🏰  ABYSS ASCENSION  🏰⚔️',
+        title='⚔️ ABYSS ASCENSION | THE DUNGEON AWAITS ⚔️',
         description=(
-            '# 🐉 ENTER THE DUNGEON!\n'
-            '## 💥 CLIMB. FIGHT. CONQUER. 💥\n'
-            '**EIGHT DAYS. ENDLESS FLOORS. THREE CHAMPIONS.**\n\n'
-            '⚔️ Create your hero and automatically fight your way through the dungeon.\n'
-            '🛡️ Collect powerful equipment and upgrade it at the Blacksmith.\n'
-            '🐲 Defeat legendary bosses and conquer higher floors.\n'
-            '🏆 Reach the **highest floor** to claim the top prizes!\n\n'
-            '## 🎁 WIN THESE PRIZES!\n' + prize_text() + '\n\n'
-            '## 📅 EVENT DATES\n**Starts:** 23 November 2026 · 12:00 AM GMT\n**Ends:** 1 December 2026 · 12:00 AM GMT\n\n'
-            '## 🚀 READY TO JOIN?\n'
-            '**👇 PRESS THE BIG GREEN JOIN BUTTON BELOW! 👇**\n'
-            '*No complicated setup — choose your class and your hero starts climbing.*'
+            '🐉 **ONE DUNGEON. EIGHT DAYS. THREE WINNERS.**\n'
+            '**Do you have what it takes to reach the top?**\n\n'
+            'Build your hero, battle monsters, conquer bosses and climb the dungeon. '
+            'Upgrade your equipment, unlock new powers and outlast your rivals to secure a place on the podium!\n\n'
+            '🏆 **THE TOP THREE ADVENTURERS WIN:**\n'
+            '🥇 **1ST PLACE — 200c + HC Box**\n'
+            '🥈 **2ND PLACE — 125c + HC Box**\n'
+            '🥉 **3RD PLACE — 75c + HC Box**\n\n'
+            '🔥 **Every floor counts. Every upgrade matters.**\n'
+            'The higher you climb, the closer you get to victory.\n\n'
+            '⚡ **JOIN NOW — YOUR ADVENTURE STARTS WITH ONE CLICK!**\n'
+            '👇 **PRESS JOIN ABYSS ASCENSION BELOW** 👇'
         ), color=GOLD)
-    e.add_field(name='📅 EVENT TIMER', value=status, inline=False)
-    e.add_field(name='🎮 HOW TO PLAY', value='**1️⃣ JOIN** → **2️⃣ PICK A CLASS** → **3️⃣ CLIMB & UPGRADE**', inline=False)
-    e.set_footer(text='Abyss Ascension • Top 3 highest floors win • Ties: earliest to reach that floor')
+    e.add_field(name='👥 ADVENTURERS JOINED', value=f'**{joined:,} players** have entered the competition!', inline=False)
+    e.add_field(name='📅 EVENT SCHEDULE', value=(
+        '**Starts:** 23 November 2026 at 12:00 AM GMT\n'
+        '**Ends:** 1 December 2026 at 12:00 AM GMT\n' + status), inline=False)
+    e.add_field(name='🎮 HOW TO PLAY', value=(
+        '**1️⃣ Join** using the button below\n'
+        '**2️⃣ Choose your hero class** in the game channel\n'
+        '**3️⃣ Fight, upgrade and climb** as high as possible\n'
+        '**4️⃣ Finish in the top 3** to win a prize'), inline=False)
+    e.set_footer(text='Highest floor wins • Ties decided by who reached that floor first')
     return e
 
 def stats(s):
@@ -810,6 +853,7 @@ class HeroSelect(discord.ui.Select):
                 existing=game.get_player(db,interaction.user.id)
                 s=existing or game.create_player(db,interaction.user.id,interaction.user.display_name,self.values[0])
             await assign_role(interaction)
+            await refresh_join_panels(interaction)
             await interaction.response.edit_message(embed=player_embed(s,'🎉 Hero created! Welcome to the dungeon.'),view=GameView())
         except ValueError as exc:
             await show_ui_notice(interaction, f'⚠️ {exc}', error=True)
@@ -832,9 +876,12 @@ class JoinButton(discord.ui.Button):
         # including before first-time players choose a hero class.
         await assign_role(interaction)
         with game.open_db() as db:
+            record_join(db, interaction.user.id)
             existing=game.get_player(db,interaction.user.id)
         if existing:
-            return await send_private(interaction,embed=player_embed(existing),view=GameView())
+            await send_private(interaction,embed=player_embed(existing),view=GameView())
+            await refresh_join_panels(interaction)
+            return
         await send_private(interaction,embed=discord.Embed(
             title='🧙✨ CREATE YOUR HERO!',
             description='## 🚀 YOUR ADVENTURE STARTS HERE!\nPick a class below. Your hero will begin climbing automatically.\n\n⚔️ **Berserker** — Heavy damage\n🛡️ **Guardian** — High health & defence\n🗡️ **Rogue** — Swift balanced fighter\n\n💡 Need guidance? Press **Read Quick Start**.',color=GOLD),view=ClassView())
@@ -879,9 +926,14 @@ class ResetGameConfirmView(discord.ui.View):
         self.stop()
 
 
-# Restrict every Abyss Ascension slash command to the configured game channel.
-# This check applies to /play, /publishpanel, /resetgame and future tree commands.
+# Restrict gameplay commands to the game channel, but allow panel publication anywhere.
+# /publishpanel and /play panel:True are operator-protected exceptions.
 async def game_channel_only(interaction: discord.Interaction) -> bool:
+    command_name = getattr(getattr(interaction, 'command', None), 'name', None)
+    if command_name == 'publishpanel':
+        return True
+    if command_name == 'play' and getattr(interaction.namespace, 'panel', False) is True:
+        return True
     if not GAME_CHANNEL_ID or interaction.channel_id == GAME_CHANNEL_ID:
         return True
     message = f'🎮 Abyss Ascension commands work only in <#{GAME_CHANNEL_ID}>.'
@@ -917,24 +969,21 @@ async def resetgame(interaction: discord.Interaction):
 @bot.tree.command(name='publishpanel', description='Publish the Abyss Ascension join panel (bot operator only)')
 @app_commands.guild_only()
 async def publishpanel(interaction: discord.Interaction):
-    if GAME_CHANNEL_ID and interaction.channel_id != GAME_CHANNEL_ID:
-        await interaction.response.send_message(f'🎮 Publish the panel in <#{GAME_CHANNEL_ID}>.', ephemeral=True)
-        return
     if not can_publish_panel(interaction):
         await interaction.response.send_message('🔒 Only the designated bot operator or a server manager can publish the panel. Configure BOT_OPERATOR_ID in Railway.', ephemeral=True)
         return
-    await interaction.response.send_message(embed=panel_embed(), view=JoinView())
+    await publish_join_panel(interaction)
 
 
 @bot.tree.command(name='play',description='Play Abyss Ascension or publish the public join panel')
 @app_commands.describe(panel='Publish the public join panel (designated bot operator or server manager)')
 async def play(interaction:discord.Interaction,panel:bool=False):
-    if GAME_CHANNEL_ID and interaction.channel_id != GAME_CHANNEL_ID:
+    if not panel and GAME_CHANNEL_ID and interaction.channel_id != GAME_CHANNEL_ID:
         return await interaction.response.send_message(f'🎮 Please use <#{GAME_CHANNEL_ID}> for Abyss Ascension.', ephemeral=True)
     if panel:
         if not can_publish_panel(interaction):
             return await send_private(interaction,content='🔒 Only the designated bot operator or a server manager can publish the join panel. Set BOT_OPERATOR_ID in Railway to your Discord user ID.')
-        await interaction.response.send_message(embed=panel_embed(),view=JoinView())
+        await publish_join_panel(interaction)
         return
     with game.open_db() as db:
         s=game.get_player(db,interaction.user.id)
