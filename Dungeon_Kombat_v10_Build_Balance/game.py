@@ -55,6 +55,20 @@ def open_db():
     db.execute('CREATE TABLE IF NOT EXISTS published_panels (guild_id INTEGER NOT NULL, channel_id INTEGER NOT NULL, message_id INTEGER PRIMARY KEY)')
     return db
 
+def reset_progress_only(db):
+    """Erase all hero progress, retaining registrations, panels and launch settings."""
+    db.execute('BEGIN IMMEDIATE')
+    try:
+        count = db.execute('SELECT COUNT(*) FROM players').fetchone()[0]
+        db.execute('DELETE FROM players')
+        db.execute('DELETE FROM adventure_journal')
+        db.execute('COMMIT')
+        return count
+    except Exception:
+        db.execute('ROLLBACK')
+        raise
+
+
 def reset_entire_game(db):
     """Clear game-specific saves and restart the DB-based event clock.
 

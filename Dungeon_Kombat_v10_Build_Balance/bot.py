@@ -1038,8 +1038,8 @@ class ResetGameConfirmView(discord.ui.View):
         self.owner_id = owner_id
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if interaction.user.id != self.owner_id or not interaction.guild or not interaction.user.guild_permissions.manage_guild:
-            await interaction.response.send_message('🔒 Only the administrator who requested this reset can confirm it.', ephemeral=True)
+        if interaction.user.id != self.owner_id or not can_publish_panel(interaction):
+            await interaction.response.send_message('🔒 Only the operator who requested this reset can confirm it.', ephemeral=True)
             return False
         return True
 
@@ -1069,7 +1069,7 @@ class ResetGameConfirmView(discord.ui.View):
 # /publishpanel and /play panel:True are operator-protected exceptions.
 async def game_channel_only(interaction: discord.Interaction) -> bool:
     command_name = getattr(getattr(interaction, 'command', None), 'name', None)
-    if command_name == 'resetprogress':
+    if command_name in ('resetprogress', 'resetgame'):
         return True
     if command_name == 'publishpanel':
         return True
@@ -1107,10 +1107,9 @@ async def resetprogress(interaction: discord.Interaction):
 
 @bot.tree.command(name='resetgame', description='ADMIN ONLY: erase all game progress and restart the event')
 @app_commands.guild_only()
-@app_commands.default_permissions(manage_guild=True)
 async def resetgame(interaction: discord.Interaction):
-    if not interaction.guild or not isinstance(interaction.user, discord.Member) or not interaction.user.guild_permissions.manage_guild:
-        await interaction.response.send_message('🔒 Manage Server permission is required.', ephemeral=True)
+    if not can_publish_panel(interaction):
+        await interaction.response.send_message('🔒 Only BOT_OPERATOR_ID or a server manager can reset the game.', ephemeral=True)
         return
     with game.open_db() as db:
         player_count = db.execute('SELECT COUNT(*) FROM players').fetchone()[0]
@@ -1197,6 +1196,10 @@ async def wait_for_adventure_bot():
 
 @bot.event
 async def setup_hook():
+    logging.info('Loaded game module from %s', getattr(game, '__file__', 'unknown'))
+    for required in ('reset_progress_only', 'reset_entire_game'):
+        if not callable(getattr(game, required, None)):
+            logging.error('INCOMPATIBLE game.py: missing %s; deploy bot.py and game.py together', required)
     if not send_adventure_digests.is_running():send_adventure_digests.start()
     if not launch_watch.is_running():launch_watch.start()
     for view in (JoinView(),LaunchView(),ClassView(),GameView('home'),GameView('dungeon'),GameView('hero'),GameView('kingdom'),GameView('activities_menu'),GameView('info'),GameView('smith'),GameView('activities'),
@@ -1206,12 +1209,14 @@ async def setup_hook():
         guild=discord.Object(id=int(GUILD_ID))
         bot.tree.copy_global_to(guild=guild)
         try:
-            await bot.tree.sync(guild=guild)
+            synced = await bot.tree.sync(guild=guild)
+            logging.info('Guild slash commands synced: %s', ', '.join(c.name for c in synced))
         except discord.HTTPException:
             logging.exception('Guild command sync failed; bot will remain online')
     else:
         try:
-            await bot.tree.sync()
+            synced = await bot.tree.sync()
+            logging.info('Global slash commands synced: %s', ', '.join(c.name for c in synced))
         except discord.HTTPException:
             logging.exception('Global command sync failed; bot will remain online')
 
