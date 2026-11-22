@@ -1109,7 +1109,7 @@ async def game_channel_only(interaction: discord.Interaction) -> bool:
     command_name = getattr(getattr(interaction, 'command', None), 'name', None)
     if command_name in ('resetprogress', 'resetgame'):
         return True
-    if command_name in ('publishpanel', 'updatepanel'):
+    if command_name in ('publishpanel', 'updatepanel', 'deletemessage'):
         return True
     if command_name == 'play' and getattr(interaction.namespace, 'panel', False) is True:
         return True
@@ -1192,6 +1192,83 @@ async def updatepanel(interaction: discord.Interaction, message_link: str):
     except (discord.Forbidden, discord.NotFound, discord.HTTPException):
         logging.exception('Failed to edit existing panel')
         await interaction.followup.send('⚠️ Could not edit that panel. Check the message link and my access to the channel.', ephemeral=True)
+
+
+class DeleteBotMessageConfirmView(discord.ui.View):
+    def __init__(self, requester_id: int, channel_id: int, message_id: int):
+        super().__init__(timeout=60)
+        self.requester_id = requester_id
+        self.channel_id = channel_id
+        self.message_id = message_id
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.requester_id:
+            await interaction.response.send_message('Only the person who requested deletion can confirm.', ephemeral=True)
+            return False
+        return True
+
+    @discord.ui.button(label='Delete message', style=discord.ButtonStyle.danger, emoji='🗑️')
+    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer(ephemeral=True)
+        try:
+            channel = bot.get_channel(self.channel_id) or await bot.fetch_channel(self.channel_id)
+            message = await channel.fetch_message(self.message_id)
+            if not bot.user or message.author.id != bot.user.id:
+                await interaction.followup.send('⚠️ This message was not posted by this bot.', ephemeral=True)
+                return
+            await message.delete()
+            with game.open_db() as db:
+                ensure_panel_schema(db)
+                db.execute('DELETE FROM published_panels WHERE channel_id=? AND message_id=?',
+                           (self.channel_id, self.message_id))
+            await interaction.followup.send('✅ Bot message deleted. Player registrations and progress were not changed.', ephemeral=True)
+        except discord.NotFound:
+            await interaction.followup.send('⚠️ Message not found or already deleted.', ephemeral=True)
+        except (discord.Forbidden, discord.HTTPException):
+            logging.exception('Could not delete requested bot message')
+            await interaction.followup.send('⚠️ Could not delete the message. Check the bot’s access to the channel.', ephemeral=True)
+        except Exception:
+            logging.exception('Delete bot message failed')
+            await interaction.followup.send('⚠️ Deletion failed; check Railway logs.', ephemeral=True)
+        finally:
+            self.stop()
+
+    @discord.ui.button(label='Cancel', style=discord.ButtonStyle.secondary, emoji='✖️')
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.edit_message(content='Deletion cancelled. The message was not changed.', view=None)
+        self.stop()
+
+
+@bot.tree.command(name='deletemessage', description='Operator: delete an existing message posted by this bot')
+@app_commands.guild_only()
+@app_commands.describe(message_link='Copy Message Link from the bot message to delete')
+async def deletemessage(interaction: discord.Interaction, message_link: str):
+    if not can_publish_panel(interaction):
+        await interaction.response.send_message('🔒 Only BOT_OPERATOR_ID or a server manager can delete bot messages.', ephemeral=True)
+        return
+    match = re.fullmatch(r'https?://(?:canary\.|ptb\.)?discord(?:app)?\.com/channels/(\d+)/(\d+)/(\d+)/?', message_link.strip())
+    if not match:
+        await interaction.response.send_message('⚠️ Paste the full Discord message link (right-click → Copy Message Link).', ephemeral=True)
+        return
+    guild_id, channel_id, message_id = map(int, match.groups())
+    if guild_id != interaction.guild_id:
+        await interaction.response.send_message('⚠️ That message is not in this server.', ephemeral=True)
+        return
+    await interaction.response.defer(ephemeral=True)
+    try:
+        channel = bot.get_channel(channel_id) or await bot.fetch_channel(channel_id)
+        message = await channel.fetch_message(message_id)
+        if not bot.user or message.author.id != bot.user.id:
+            await interaction.followup.send('⚠️ I can only delete messages posted by this bot.', ephemeral=True)
+            return
+        await interaction.followup.send(
+            f'⚠️ **Delete this bot message?**\n{message.jump_url}\n\nThis cannot be undone. Confirm within 60 seconds.',
+            view=DeleteBotMessageConfirmView(interaction.user.id, channel_id, message_id),
+            ephemeral=True,
+        )
+    except (discord.Forbidden, discord.NotFound, discord.HTTPException):
+        logging.exception('Could not locate bot message for deletion')
+        await interaction.followup.send('⚠️ Could not find that message. Check the link and bot channel access.', ephemeral=True)
 
 
 @bot.tree.command(name='publishpanel', description='Publish the Abyss Ascension join panel (bot operator only)')
