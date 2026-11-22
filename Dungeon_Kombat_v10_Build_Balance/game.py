@@ -51,6 +51,8 @@ def open_db():
     db.execute('''CREATE TABLE IF NOT EXISTS adventure_journal (
         user_id INTEGER PRIMARY KEY, baseline TEXT NOT NULL, started_at REAL NOT NULL,
         last_sent REAL NOT NULL DEFAULT 0, last_attempt REAL NOT NULL DEFAULT 0)''')
+    db.execute('CREATE TABLE IF NOT EXISTS panel_joins (user_id INTEGER PRIMARY KEY)')
+    db.execute('CREATE TABLE IF NOT EXISTS published_panels (guild_id INTEGER NOT NULL, channel_id INTEGER NOT NULL, message_id INTEGER PRIMARY KEY)')
     return db
 
 def reset_entire_game(db):
@@ -64,6 +66,7 @@ def reset_entire_game(db):
         count = db.execute('SELECT COUNT(*) FROM players').fetchone()[0]
         db.execute('DELETE FROM players')
         db.execute('DELETE FROM adventure_journal')
+        db.execute('DELETE FROM panel_joins')
         db.execute("DELETE FROM config WHERE key='start'")
         db.execute('COMMIT')
         return count
@@ -108,9 +111,11 @@ def journal_mark_attempt(db,uid,now=None):
     db.execute('UPDATE adventure_journal SET last_attempt=? WHERE user_id=?',(now,uid))
 
 def event_start(db):
-    row=db.execute("SELECT value FROM config WHERE key='start'").fetchone()
-    if row:return float(row['value'])
     setting=os.getenv('EVENT_START_UTC','').strip()
+    # Fixed event configuration overrides legacy saved start timestamps.
+    if not setting:
+        row=db.execute("SELECT value FROM config WHERE key='start'").fetchone()
+        if row:return float(row['value'])
     if setting:
         start=datetime.fromisoformat(setting.replace('Z','+00:00'))
         if start.tzinfo is None: start=start.replace(tzinfo=timezone.utc)
@@ -121,7 +126,16 @@ def event_start(db):
 def event_window(db,now=None):
     now=utcnow() if now is None else now
     start=event_start(db)
-    return start, (start+EVENT_DAYS*86400 if start is not None else None)
+    end_setting=os.getenv('EVENT_END_UTC','').strip()
+    if end_setting:
+        end_dt=datetime.fromisoformat(end_setting.replace('Z','+00:00'))
+        if end_dt.tzinfo is None:end_dt=end_dt.replace(tzinfo=timezone.utc)
+        end=end_dt.timestamp()
+    else:
+        end=start+EVENT_DAYS*86400 if start is not None else None
+    if start is not None and end is not None and end <= start:
+        raise ValueError('EVENT_END_UTC must be after EVENT_START_UTC')
+    return start,end
 
 def begin_event(db,now=None):
     now=utcnow() if now is None else now
@@ -155,7 +169,7 @@ def create_player(db,uid,username,cls,now=None):
         if get_player(db,uid):raise ValueError('You already have a hero.')
         start,end=begin_event(db,now)
         if now<start:raise ValueError('The event has not started yet.')
-        if now>=end:raise ValueError('The seven-day event has finished.')
+        if now>=end:raise ValueError('The event has finished.')
         s=initial_state(cls,now);save_player(db,uid,username,s)
         journal_row(db,uid,now)
         db.execute('COMMIT');return s
@@ -420,6 +434,8 @@ def refresh(db,uid,username,now=None):
         if s is None:raise ValueError('Use /play to create a hero first.')
         ensure_gear(s)
         start,end=event_window(db,now)
+        if start is not None and s.get('last_tick', now)<start:
+            s['last_tick']=start
         if start is not None and now<start:msg='Event has not started.'
         elif end is not None and now>=end:
             # Stop progress at event end; never count later time.
@@ -476,6 +492,8 @@ def mutate(db,uid,username,action,now=None):
         start,end=event_window(db,now)
         if start is not None and now<start:raise ValueError('Event has not started.')
         if end is not None and now>=end:raise ValueError('Event finished; leaderboard is frozen.')
+        if start is not None and s.get('last_tick', now)<start:
+            s['last_tick']=start
         progress(s,now)
         recharge_expeditions(s,now)
         if action.startswith('build_'):
