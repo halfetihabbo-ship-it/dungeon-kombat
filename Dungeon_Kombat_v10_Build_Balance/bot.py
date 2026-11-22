@@ -1,6 +1,7 @@
 """Abyss Ascension: single /play command, public join panel, private interactive menus."""
 import logging
 import time
+from datetime import datetime, timezone
 import os
 import discord
 from discord import app_commands
@@ -13,6 +14,30 @@ GUILD_ID = os.getenv('GUILD_ID', '').strip()
 ROLE_ID = os.getenv('DISCORD_ROLE_ID', '1574002249099644970').strip()
 GAME_CHANNEL_ID = int(os.getenv('GAME_CHANNEL_ID', '0') or 0)
 BOT_OPERATOR_ID = int(os.getenv('BOT_OPERATOR_ID', '0') or 0)
+LAUNCH_AT = datetime(2026, 11, 23, 0, 0, tzinfo=timezone.utc).timestamp()
+FINISH_AT = datetime(2026, 12, 1, 0, 0, tzinfo=timezone.utc).timestamp()
+
+def launch_status():
+    now = game.utcnow()
+    if now < LAUNCH_AT:
+        return 'waiting'
+    if now >= FINISH_AT:
+        return 'ended'
+    return 'live'
+
+async def require_live(interaction):
+    status = launch_status()
+    if status == 'live':
+        return True
+    if status == 'waiting':
+        msg = f'⏳ Abyss Ascension begins <t:{int(LAUNCH_AT)}:F> (<t:{int(LAUNCH_AT)}:R>). Your role-panel registration is all you need for now. Watch the game channel for the launch announcement!'
+    else:
+        msg = '🏁 Abyss Ascension has ended. New adventures are closed.'
+    if interaction.response.is_done():
+        await interaction.followup.send(msg, ephemeral=True)
+    else:
+        await interaction.response.send_message(msg, ephemeral=True)
+    return False
 
 def can_publish_panel(interaction):
     # A designated operator can publish without Manage Server. Never allow everyone.
@@ -43,18 +68,27 @@ def event_text(db):
 def prize_text():
     return '\n'.join(PRIZES)
 
+def ensure_panel_schema(db):
+    """Non-destructive migration for older game databases."""
+    db.execute('CREATE TABLE IF NOT EXISTS panel_joins (user_id INTEGER PRIMARY KEY)')
+    db.execute('CREATE TABLE IF NOT EXISTS published_panels (guild_id INTEGER NOT NULL, channel_id INTEGER NOT NULL, message_id INTEGER PRIMARY KEY)')
+
+
 def joined_count(db):
+    ensure_panel_schema(db)
     # Include heroes created before this feature was introduced.
     return db.execute('''SELECT COUNT(*) FROM (SELECT user_id FROM players UNION SELECT user_id FROM panel_joins)''').fetchone()[0]
 
 
 def record_join(db, uid):
+    ensure_panel_schema(db)
     db.execute('INSERT OR IGNORE INTO panel_joins(user_id) VALUES (?)', (uid,))
 
 
 async def refresh_join_panels(interaction=None):
     """Refresh all known published panels; a failed edit must not block joining."""
     with game.open_db() as db:
+        ensure_panel_schema(db)
         panels = db.execute('SELECT guild_id, channel_id, message_id FROM published_panels').fetchall()
     for panel in panels:
         try:
@@ -72,6 +106,7 @@ async def publish_join_panel(interaction):
     try:
         message = await interaction.original_response()
         with game.open_db() as db:
+            ensure_panel_schema(db)
             db.execute('INSERT OR REPLACE INTO published_panels(guild_id,channel_id,message_id) VALUES(?,?,?)',
                        (interaction.guild_id, interaction.channel_id, message.id))
     except Exception:
@@ -95,18 +130,18 @@ def panel_embed():
             '🥉 **3RD PLACE — 75c + HC Box**\n\n'
             '🔥 **Every floor counts. Every upgrade matters.**\n'
             'The higher you climb, the closer you get to victory.\n\n'
-            '⚡ **JOIN NOW — YOUR ADVENTURE STARTS WITH ONE CLICK!**\n'
+            '⚡ **REGISTER NOW — THE DUNGEON OPENS AT MIDNIGHT!**\n'
             '👇 **PRESS JOIN ABYSS ASCENSION BELOW** 👇'
         ), color=GOLD)
     e.add_field(name='👥 ADVENTURERS JOINED', value=f'**{joined:,} players** have entered the competition!', inline=False)
     e.add_field(name='📅 EVENT SCHEDULE', value=(
         '**Starts:** 23 November 2026 at 12:00 AM GMT\n'
         '**Ends:** 1 December 2026 at 12:00 AM GMT\n' + status), inline=False)
-    e.add_field(name='🎮 HOW TO PLAY', value=(
-        '**1️⃣ Join** using the button below\n'
-        '**2️⃣ Choose your hero class** in the game channel\n'
-        '**3️⃣ Fight, upgrade and climb** as high as possible\n'
-        '**4️⃣ Finish in the top 3** to win a prize'), inline=False)
+    e.add_field(name='🎮 HOW TO JOIN', value=(
+        '**1️⃣ Click Join below** to receive your participant role.\n'
+        '**2️⃣ Wait until 23 November at 12:00 AM GMT.** No game starts yet.\n'
+        '**3️⃣ At midnight**, a new Start Playing panel appears in the game channel.\n'
+        '**4️⃣ Click Start Playing** there to choose your hero and begin climbing!'), inline=False)
     e.set_footer(text='Highest floor wins • Ties decided by who reached that floor first')
     return e
 
@@ -551,6 +586,8 @@ async def show_ui_notice(interaction, message, *, error=False):
         await send_private(interaction, content=str(message))
 
 async def show_player(interaction, screen='home', action=None):
+    if not await require_live(interaction):
+        return
     try:
         # Component defer (thinking=False) acknowledges the button and edits
         # the existing message, instead of creating a new ephemeral reply.
@@ -594,6 +631,8 @@ class NavButton(discord.ui.Button):
                          custom_id=f'climber:v3:{screen}:{action or "nav"}:{key}')
         self.screen, self.action = screen, action
     async def callback(self, interaction):
+        if self.screen not in ('help', 'rankings') and not await require_live(interaction):
+            return
         if self.screen=='help':
             await interaction.response.edit_message(embed=help_embed(), view=HelpView())
         elif self.screen=='rankings':
@@ -848,6 +887,8 @@ class HeroSelect(discord.ui.Select):
                                   discord.SelectOption(label='Guardian',description='🛡️ Strong defence and health',emoji='🛡️'),
                                   discord.SelectOption(label='Rogue',description='🗡️ Swift, balanced fighter',emoji='🗡️')])
     async def callback(self, interaction):
+        if not await require_live(interaction):
+            return
         try:
             with game.open_db() as db:
                 existing=game.get_player(db,interaction.user.id)
@@ -872,19 +913,84 @@ class JoinButton(discord.ui.Button):
         super().__init__(label='⚔️ JOIN ABYSS ASCENSION ⚔️',style=discord.ButtonStyle.success,
                          custom_id='climber:v2:join',row=0)
     async def callback(self,interaction):
-        # Grant the configured participant role as soon as Join is clicked,
-        # including before first-time players choose a hero class.
+        # Registration only: do NOT create or open a character here.
         await assign_role(interaction)
         with game.open_db() as db:
             record_join(db, interaction.user.id)
-            existing=game.get_player(db,interaction.user.id)
-        if existing:
-            await send_private(interaction,embed=player_embed(existing),view=GameView())
-            await refresh_join_panels(interaction)
+        await interaction.response.send_message(
+            f'✅ **You are registered for Abyss Ascension!**\n'
+            f'Your participant role has been requested. The game begins <t:{int(LAUNCH_AT)}:F> '
+            f'(<t:{int(LAUNCH_AT)}:R>).\n\n'
+            f'🎮 Watch <#{GAME_CHANNEL_ID}> for the **Start Playing** panel at midnight. '
+            'Click that new button to choose your hero and begin. Nothing starts yet.', ephemeral=True)
+        await refresh_join_panels(interaction)
+
+class LaunchJoinButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(label='⚔️ START PLAYING', style=discord.ButtonStyle.success,
+                         custom_id='climber:v4:launch_start')
+    async def callback(self, interaction):
+        if not await require_live(interaction):
             return
-        await send_private(interaction,embed=discord.Embed(
-            title='🧙✨ CREATE YOUR HERO!',
-            description='## 🚀 YOUR ADVENTURE STARTS HERE!\nPick a class below. Your hero will begin climbing automatically.\n\n⚔️ **Berserker** — Heavy damage\n🛡️ **Guardian** — High health & defence\n🗡️ **Rogue** — Swift balanced fighter\n\n💡 Need guidance? Press **Read Quick Start**.',color=GOLD),view=ClassView())
+        if GAME_CHANNEL_ID and interaction.channel_id != GAME_CHANNEL_ID:
+            await interaction.response.send_message(f'🎮 Please use <#{GAME_CHANNEL_ID}>.', ephemeral=True)
+            return
+        with game.open_db() as db:
+            ensure_panel_schema(db)
+            registered = db.execute('SELECT 1 FROM panel_joins WHERE user_id=?', (interaction.user.id,)).fetchone()
+            existing = game.get_player(db, interaction.user.id)
+        if not registered and not existing:
+            await interaction.response.send_message('🔒 Register first using the original public role panel to receive your participant role.', ephemeral=True)
+            return
+        if existing:
+            await send_private(interaction, embed=player_embed(existing), view=GameView())
+        else:
+            await send_private(interaction, embed=discord.Embed(
+                title='🧙✨ YOUR ADVENTURE BEGINS!',
+                description='Choose your hero class below to enter Abyss Ascension.\n\n⚔️ **Berserker** — Heavy damage\n🛡️ **Guardian** — High health and defence\n🗡️ **Rogue** — Swift balanced fighter',
+                color=GOLD), view=ClassView())
+
+class LaunchView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+        self.add_item(LaunchJoinButton())
+
+async def announce_launch():
+    if not GAME_CHANNEL_ID or launch_status() != 'live':
+        return
+    with game.open_db() as db:
+        ensure_panel_schema(db)
+        already = db.execute("SELECT value FROM config WHERE key='launch_panel_message_id'").fetchone()
+        if already:
+            return
+    channel = bot.get_channel(GAME_CHANNEL_ID) or await bot.fetch_channel(GAME_CHANNEL_ID)
+    if not isinstance(channel, (discord.TextChannel, discord.Thread)):
+        logging.error('GAME_CHANNEL_ID must point to a text channel or thread')
+        return
+    embed = discord.Embed(
+        title='🚨⚔️ ABYSS ASCENSION IS NOW LIVE!',
+        description=('🐉 **The dungeon gates are OPEN!**\n\n'
+                     'Registered adventurers: click **⚔️ START PLAYING** below to choose your hero and begin!\n\n'
+                     '🏆 **1st:** 200c + HC Box\n🥈 **2nd:** 125c + HC Box\n🥉 **3rd:** 75c + HC Box\n\n'
+                     f'⏳ The competition ends <t:{int(FINISH_AT)}:F> (<t:{int(FINISH_AT)}:R>).'), color=GOLD)
+    msg = await channel.send(content='@everyone ⚔️ **ABYSS ASCENSION HAS BEGUN!**', embed=embed, view=LaunchView(),
+                             allowed_mentions=discord.AllowedMentions(everyone=True))
+    with game.open_db() as db:
+        db.execute("INSERT OR REPLACE INTO config(key,value) VALUES('launch_panel_message_id',?)", (str(msg.id),))
+    logging.info('Posted launch panel in channel %s as message %s', GAME_CHANNEL_ID, msg.id)
+
+@tasks.loop(seconds=20)
+async def launch_watch():
+    try:
+        await announce_launch()
+    except (discord.Forbidden, discord.HTTPException):
+        logging.exception('Cannot post launch announcement: check game-channel Send Messages / Embed Links permissions')
+    except Exception:
+        logging.exception('Launch announcement failed')
+
+@launch_watch.before_loop
+async def before_launch_watch():
+    await bot.wait_until_ready()
 
 class JoinView(discord.ui.View):
     def __init__(self):
@@ -985,6 +1091,8 @@ async def play(interaction:discord.Interaction,panel:bool=False):
             return await send_private(interaction,content='🔒 Only the designated bot operator or a server manager can publish the join panel. Set BOT_OPERATOR_ID in Railway to your Discord user ID.')
         await publish_join_panel(interaction)
         return
+    if not await require_live(interaction):
+        return
     with game.open_db() as db:
         s=game.get_player(db,interaction.user.id)
     if s:
@@ -1038,15 +1146,22 @@ async def wait_for_adventure_bot():
 @bot.event
 async def setup_hook():
     if not send_adventure_digests.is_running():send_adventure_digests.start()
-    for view in (JoinView(),ClassView(),GameView('home'),GameView('dungeon'),GameView('hero'),GameView('kingdom'),GameView('activities_menu'),GameView('info'),GameView('smith'),GameView('activities'),
+    if not launch_watch.is_running():launch_watch.start()
+    for view in (JoinView(),LaunchView(),ClassView(),GameView('home'),GameView('dungeon'),GameView('hero'),GameView('kingdom'),GameView('activities_menu'),GameView('info'),GameView('smith'),GameView('activities'),
                  GameView('journal'),GameView('boss'),GameView('arena'),GameView('pets'),GameView('skills'),GameView('merchant'),GameView('wheel'),GameView('quests'),GameView('enchant'),GameView('expedition'),GameView('checkpoint'),GameView('build'),GameView('inventory'),GameView('goblin'),GameView('portal'),GameView('camp'),GameView('relics'),GameView('chamber'),HelpView(),RankingsView()):
         bot.add_view(view)
     if GUILD_ID:
         guild=discord.Object(id=int(GUILD_ID))
         bot.tree.copy_global_to(guild=guild)
-        await bot.tree.sync(guild=guild)
+        try:
+            await bot.tree.sync(guild=guild)
+        except discord.HTTPException:
+            logging.exception('Guild command sync failed; bot will remain online')
     else:
-        await bot.tree.sync()
+        try:
+            await bot.tree.sync()
+        except discord.HTTPException:
+            logging.exception('Global command sync failed; bot will remain online')
 
 @bot.event
 async def on_message(message: discord.Message):
