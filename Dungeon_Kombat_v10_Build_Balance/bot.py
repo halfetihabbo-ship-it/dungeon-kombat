@@ -999,6 +999,39 @@ class JoinView(discord.ui.View):
         self.add_item(NavButton('HOW TO PLAY','help',emoji='📖',style=discord.ButtonStyle.primary))
         self.add_item(NavButton('VIEW PRIZES & LEADERBOARD','rankings',emoji='🏆'))
 
+class ResetProgressConfirmView(discord.ui.View):
+    def __init__(self, owner_id: int):
+        super().__init__(timeout=60)
+        self.owner_id = owner_id
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.owner_id or not can_publish_panel(interaction):
+            await interaction.response.send_message('🔒 Only the operator who requested the reset can confirm.', ephemeral=True)
+            return False
+        return True
+
+    @discord.ui.button(label='Confirm progress reset', style=discord.ButtonStyle.danger, emoji='🗑️')
+    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer(ephemeral=True)
+        try:
+            with game.open_db() as db:
+                removed = game.reset_progress_only(db)
+        except Exception:
+            logging.exception('Progress-only reset failed')
+            await interaction.edit_original_response(content='⚠️ Reset failed; see Railway logs.', view=None)
+            return
+        logging.warning('Progress reset by %s; %s heroes removed', interaction.user.id, removed)
+        await interaction.edit_original_response(content=(
+            f'✅ **Progress reset complete.** Removed **{removed}** hero saves and their journals. '
+            'Registrations, participant roles, published panels, join counter and event schedule are preserved.'), view=None)
+        self.stop()
+
+    @discord.ui.button(label='Cancel', style=discord.ButtonStyle.secondary, emoji='✖️')
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.edit_message(content='Reset cancelled. No data was changed.', view=None)
+        self.stop()
+
+
 class ResetGameConfirmView(discord.ui.View):
     def __init__(self, owner_id: int):
         super().__init__(timeout=60)
@@ -1036,6 +1069,8 @@ class ResetGameConfirmView(discord.ui.View):
 # /publishpanel and /play panel:True are operator-protected exceptions.
 async def game_channel_only(interaction: discord.Interaction) -> bool:
     command_name = getattr(getattr(interaction, 'command', None), 'name', None)
+    if command_name == 'resetprogress':
+        return True
     if command_name == 'publishpanel':
         return True
     if command_name == 'play' and getattr(interaction.namespace, 'panel', False) is True:
@@ -1051,6 +1086,23 @@ async def game_channel_only(interaction: discord.Interaction) -> bool:
 
 # discord.py invokes this hook for all application commands.
 bot.tree.interaction_check = game_channel_only
+
+
+@bot.tree.command(name='resetprogress', description='Operator: reset hero progress but keep registered players and panels')
+@app_commands.guild_only()
+async def resetprogress(interaction: discord.Interaction):
+    if not can_publish_panel(interaction):
+        await interaction.response.send_message('🔒 Only BOT_OPERATOR_ID or a server manager can reset progress.', ephemeral=True)
+        return
+    with game.open_db() as db:
+        player_count = db.execute('SELECT COUNT(*) FROM players').fetchone()[0]
+        registrations = db.execute('SELECT COUNT(*) FROM panel_joins').fetchone()[0]
+    await interaction.response.send_message(
+        '⚠️ **RESET ALL HERO PROGRESS — IRREVERSIBLE**\n\n'
+        f'This deletes **{player_count}** saved heroes, including levels, floors, equipment, gold and leaderboard progress.\n'
+        f'**{registrations}** registered users remain registered; the participant roles, panels and launch schedule are untouched.\n\n'
+        'Make sure you have backed up your Railway database. Confirm within 60 seconds or cancel.',
+        view=ResetProgressConfirmView(interaction.user.id), ephemeral=True)
 
 
 @bot.tree.command(name='resetgame', description='ADMIN ONLY: erase all game progress and restart the event')
