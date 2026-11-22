@@ -14,8 +14,8 @@ GUILD_ID = os.getenv('GUILD_ID', '').strip()
 ROLE_ID = os.getenv('DISCORD_ROLE_ID', '1574002249099644970').strip()
 GAME_CHANNEL_ID = int(os.getenv('GAME_CHANNEL_ID', '0') or 0)
 BOT_OPERATOR_ID = int(os.getenv('BOT_OPERATOR_ID', '0') or 0)
-LAUNCH_AT = datetime(2026, 11, 23, 0, 0, tzinfo=timezone.utc).timestamp()
-FINISH_AT = datetime(2026, 12, 1, 0, 0, tzinfo=timezone.utc).timestamp()
+LAUNCH_AT = datetime(2026, 11, 23, 18, 0, tzinfo=timezone.utc).timestamp()
+FINISH_AT = datetime(2026, 12, 1, 18, 0, tzinfo=timezone.utc).timestamp()
 
 def launch_status():
     now = game.utcnow()
@@ -130,17 +130,17 @@ def panel_embed():
             '🥉 **3RD PLACE — 75c + HC Box**\n\n'
             '🔥 **Every floor counts. Every upgrade matters.**\n'
             'The higher you climb, the closer you get to victory.\n\n'
-            '⚡ **REGISTER NOW — THE DUNGEON OPENS AT MIDNIGHT!**\n'
+            '⚡ **REGISTER NOW — THE DUNGEON OPENS AT 6 PM GMT!**\n'
             '👇 **PRESS JOIN ABYSS ASCENSION BELOW** 👇'
         ), color=GOLD)
     e.add_field(name='👥 ADVENTURERS JOINED', value=f'**{joined:,} players** have entered the competition!', inline=False)
     e.add_field(name='📅 EVENT SCHEDULE', value=(
-        '**Starts:** 23 November 2026 at 12:00 AM GMT\n'
-        '**Ends:** 1 December 2026 at 12:00 AM GMT\n' + status), inline=False)
+        '**Starts:** 23 November 2026 at 6:00 PM GMT\n'
+        '**Ends:** 1 December 2026 at 6:00 PM GMT\n' + status), inline=False)
     e.add_field(name='🎮 HOW TO JOIN', value=(
         '**1️⃣ Click Join below** to receive your participant role.\n'
-        '**2️⃣ Wait until 23 November at 12:00 AM GMT.** No game starts yet.\n'
-        '**3️⃣ At midnight**, a new Start Playing panel appears in the game channel.\n'
+        '**2️⃣ Wait until 23 November at 6:00 PM GMT.** No game starts yet.\n'
+        '**3️⃣ At 6:00 PM GMT**, a new Start Playing panel appears in the game channel.\n'
         '**4️⃣ Click Start Playing** there to choose your hero and begin climbing!'), inline=False)
     e.set_footer(text='Highest floor wins • Ties decided by who reached that floor first')
     return e
@@ -165,7 +165,7 @@ def rankings_embed():
 
 def help_embed():
     e = discord.Embed(title='📖⚔️ ABYSS ASCENSION — HELP & QUICK START', description=(
-        '## 📅 EVENT DATES\n**23 November 2026, 00:00 GMT → 1 December 2026, 00:00 GMT.** The join panel displays a live Discord countdown.\n\n## 🚀 QUICK START — 3 STEPS\n'
+        '## 📅 EVENT DATES\n**23 November 2026, 18:00 GMT → 1 December 2026, 18:00 GMT.** The join panel displays a live Discord countdown.\n\n## 🚀 QUICK START — 3 STEPS\n'
         '**1️⃣ CREATE YOUR HERO** — Berserker ⚔️, Guardian 🛡️ or Rogue 🗡️.\n'
         '**2️⃣ CLIMB & PLAY** — Passive battles process every **45 seconds** (up to **8 hours** offline), but grant less XP. Expeditions and trials give meaningful active progress.\n'
         '**3️⃣ RETURN & GROW STRONGER** — Press **🔄 Refresh**, claim rewards, upgrade gear and fight bosses.\n'
@@ -921,7 +921,7 @@ class JoinButton(discord.ui.Button):
             f'✅ **You are registered for Abyss Ascension!**\n'
             f'Your participant role has been requested. The game begins <t:{int(LAUNCH_AT)}:F> '
             f'(<t:{int(LAUNCH_AT)}:R>).\n\n'
-            f'🎮 Watch <#{GAME_CHANNEL_ID}> for the **Start Playing** panel at midnight. '
+            f'🎮 Watch <#{GAME_CHANNEL_ID}> for the **Start Playing** panel at 6:00 PM GMT. '
             'Click that new button to choose your hero and begin. Nothing starts yet.', ephemeral=True)
         await refresh_join_panels(interaction)
 
