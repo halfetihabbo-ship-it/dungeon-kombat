@@ -1230,7 +1230,7 @@ async def game_channel_only(interaction: discord.Interaction) -> bool:
     command_name = getattr(getattr(interaction, 'command', None), 'name', None)
     if command_name in ('resetprogress', 'resetgame', 'restartgame'):
         return True
-    if command_name in ('publishpanel', 'updatepanel', 'deletemessage'):
+    if command_name in ('publishpanel', 'updatepanel', 'deletemessage', 'postheropanel'):
         return True
     if command_name == 'play' and getattr(interaction.namespace, 'panel', False) is True:
         return True
@@ -1407,6 +1407,37 @@ async def deletemessage(interaction: discord.Interaction, message_link: str):
     except (discord.Forbidden, discord.NotFound, discord.HTTPException):
         logging.exception('Could not locate bot message for deletion')
         await interaction.followup.send('⚠️ Could not find that message. Check the link and bot channel access.', ephemeral=True)
+
+
+@bot.tree.command(name='postheropanel', description='Operator: post a NEW Choose Your Hero panel in the game channel')
+@app_commands.guild_only()
+async def postheropanel(interaction: discord.Interaction):
+    """Create a new public entry panel without resetting any hero or registration."""
+    if not can_publish_panel(interaction):
+        await interaction.response.send_message('🔒 Only the bot operator or a server manager can post the hero panel.', ephemeral=True)
+        return
+    if not GAME_CHANNEL_ID:
+        await interaction.response.send_message('⚠️ GAME_CHANNEL_ID is not configured in Railway.', ephemeral=True)
+        return
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    try:
+        channel = bot.get_channel(GAME_CHANNEL_ID) or await bot.fetch_channel(GAME_CHANNEL_ID)
+        if not isinstance(channel, (discord.TextChannel, discord.Thread)):
+            raise ValueError('GAME_CHANNEL_ID must be a text channel or thread')
+        message = await channel.send(
+            content='⚔️ **ABYSS ASCENSION — CHOOSE YOUR HERO!**',
+            embed=restarted_launch_embed(), view=LaunchView(),
+            allowed_mentions=discord.AllowedMentions.none())
+        with game.open_db() as db:
+            db.execute("INSERT OR REPLACE INTO config(key,value) VALUES('launch_panel_message_id',?)", (str(message.id),))
+        await interaction.followup.send(
+            f'✅ New **Choose Your Hero** panel posted in <#{GAME_CHANNEL_ID}>: {message.jump_url}\n'
+            'Registered players can click **Start Playing** to choose a hero. No progress was reset.', ephemeral=True)
+    except Exception:
+        logging.exception('Could not publish new Choose Your Hero panel')
+        await interaction.followup.send(
+            '⚠️ Could not post the hero panel. Check the Railway logs and bot Send Messages / Embed Links permissions.',
+            ephemeral=True)
 
 
 @bot.tree.command(name='publishpanel', description='Publish the Abyss Ascension join panel (bot operator only)')
