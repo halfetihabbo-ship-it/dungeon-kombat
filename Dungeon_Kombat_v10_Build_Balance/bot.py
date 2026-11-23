@@ -206,8 +206,27 @@ def help_embed():
         '## 💡 TIPS\n'
         '💰 Stuck? Your hero farms resources and heals. Passive auto-upgrading is disabled: visit the Blacksmith yourself. Every ten floors grants a milestone chest.\n'
         '🏠 **Home** returns to the main hub; **⬅️ Back** returns to the previous category.\n'
-        '🏆 Highest floor after seven days wins; ties go to whoever reached it first.'
+        '🏆 Highest floor when the eight-day event ends wins; ties go to whoever reached it first.'
     ),color=PURPLE)
+    # Discord caps embed descriptions at 4096 characters. Split the full
+    # guide into separate embeds/fields rather than sending an invalid payload.
+    if len(e.description or '') > 4096:
+        guide = e.description
+        sections = guide.split('\n\n')
+        intro = []
+        extras = []
+        for section in sections:
+            if len('\n\n'.join(intro + [section])) <= 3000:
+                intro.append(section)
+            else:
+                extras.append(section)
+        e.description = '\n\n'.join(intro)
+        for index, section in enumerate(extras, 1):
+            while section:
+                piece = section[:1000]
+                e.add_field(name=f'📘 MORE HELP ({index})', value=piece, inline=False)
+                section = section[1000:]
+                index += 1
     e.add_field(name='🎁 PRIZES',value=prize_text(),inline=False)
     e.set_footer(text='Only /play is required • Button menus edit the same private panel')
     return e
@@ -271,7 +290,7 @@ def player_embed(s, notice='', screen='home'):
         e.add_field(name='📜 LATEST ADVENTURE REPORT', value=(notice or s.get('last_report') or 'Your journey begins!')[:1024], inline=False)
     elif screen=='journal':
         with game.open_db() as db:
-            report=game.journal_stats(db, s['_user_id'])
+            report=game.journal_stats(db, s['_user_id'], s)
         if report:
             e.add_field(name='📊 PROGRESS SINCE LAST REPORT',value=journal_delta_text(report),inline=False)
             e.add_field(name='⚔️ CURRENT COMBAT STATS',value=(f'❤️ HP: **{s["hp"]:,}/{game.max_hp(s):,}**\n'
@@ -395,7 +414,7 @@ def player_embed(s, notice='', screen='home'):
         e.add_field(name='👁️ ENEMY INTENT',value={'heavy':'💥 Heavy Strike next — Guard reduces damage','feint':'🌀 Feint next — Power Strike gets a bonus','strike':'⚔️ Normal Strike next — choose your timing'}[intent],inline=False)
     if notice and screen!='home':
         e.add_field(name='📣 LATEST RESULT', value=notice[:1024], inline=False)
-    e.set_footer(text='⚔️ Battles: 45 seconds • 🌙 Offline: 8 hours • 🏆 7-day event • 📖 Help available')
+    e.set_footer(text='⚔️ Battles: 45 seconds • 🌙 Offline: 8 hours • 🏆 8-day event • 📖 Help available')
     return e
 
 async def send_private(interaction, *, embed=None, view=None, content=None):
@@ -593,7 +612,7 @@ async def show_player(interaction, screen='home', action=None):
         await interaction.response.defer(thinking=False)
         with game.open_db() as db:
             if not game.get_player(db, interaction.user.id):
-                return await send_private(interaction, embed=help_embed(), view=JoinView())
+                return await send_private(interaction, embed=discord.Embed(title='⚔️ CREATE YOUR HERO', description='Choose your hero class to start your adventure.', color=GOLD), view=ClassView())
             s, notice = (game.mutate(db, interaction.user.id, interaction.user.display_name, action)
                          if action else game.refresh(db, interaction.user.id, interaction.user.display_name))
         s['_user_id']=interaction.user.id
@@ -614,7 +633,7 @@ async def show_player(interaction, screen='home', action=None):
         except discord.HTTPException:
             logging.exception('Unable to update panel with action warning')
     except Exception:
-        logging.exception('Game interaction failed: screen=%s action=%s user=%s',
+        logging.exception('Game interaction failed (check traceback for the exact cause): screen=%s action=%s user=%s',
                           screen, action, interaction.user.id)
         try:
             await show_ui_notice(interaction, 'Unable to load that menu. Please try again or contact an administrator.', error=True)
@@ -1304,7 +1323,7 @@ async def play(interaction:discord.Interaction,panel:bool=False):
     else:
         await send_private(interaction,embed=discord.Embed(
             title='🏰⚔️ WELCOME TO ABYSS ASCENSION!',
-            description='## 🚀 CREATE YOUR HERO!\nSelect your class below and start your seven-day adventure.\n\n📖 New player? Tap **Read Quick Start** for an easy guide.',color=GOLD),view=ClassView())
+            description='## 🚀 CREATE YOUR HERO!\nSelect your class below and start your eight-day adventure.\n\n📖 New player? Tap **Read Quick Start** for an easy guide.',color=GOLD),view=ClassView())
 
 @tasks.loop(minutes=5)
 async def send_adventure_digests():

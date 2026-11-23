@@ -7,7 +7,7 @@ from pathlib import Path
 DB_PATH = os.getenv('DATABASE_PATH', '/data/dungeon_climber.db')
 BATTLE_SECONDS = 45  # slower passive climb; manual play is the main accelerator
 OFFLINE_CAP_SECONDS = 8 * 3600
-EVENT_DAYS = 7
+EVENT_DAYS = 8
 WEAPONS = [
  ('Rusty Sword',5),('Wooden Club',8),('Iron Dagger',12),
  ('Steel Sword',20),('Hunter\'s Axe',28),('Knight\'s Blade',38),
