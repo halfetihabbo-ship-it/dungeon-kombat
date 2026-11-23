@@ -1,5 +1,6 @@
 """Abyss Ascension: single /play command, public join panel, private interactive menus."""
 import logging
+import asyncio
 import time
 from datetime import datetime, timezone
 import os
@@ -10,7 +11,7 @@ from discord.ext import commands, tasks
 import game
 
 logging.basicConfig(level=logging.INFO)
-logging.info('ABYSS_BUILD=2026-11-23-RESTART-CLASS-UI')
+logging.info('ABYSS_BUILD=2026-11-23-STABLE-PANEL-GUARD')
 TOKEN = os.getenv('DISCORD_TOKEN', '').strip()
 GUILD_ID = os.getenv('GUILD_ID', '').strip()
 ROLE_ID = os.getenv('DISCORD_ROLE_ID', '1574002249099644970').strip()
@@ -652,6 +653,27 @@ async def show_player(interaction, screen='home', action=None):
         except discord.HTTPException:
             logging.exception('Unable to update panel with menu error')
 
+# Serialise UI callbacks for each player to avoid overlapping message edits.
+_player_ui_locks = {}
+
+def player_ui_lock(user_id):
+    lock = _player_ui_locks.get(user_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        _player_ui_locks[user_id] = lock
+    return lock
+
+async def run_player_ui_once(interaction, callback):
+    lock = player_ui_lock(interaction.user.id)
+    if lock.locked():
+        # Acknowledge duplicate/rapid clicks without redrawing a stale panel.
+        if not interaction.response.is_done():
+            await interaction.response.defer(thinking=False)
+        logging.info('Ignored overlapping UI click from user %s', interaction.user.id)
+        return
+    async with lock:
+        await callback()
+
 class NavButton(discord.ui.Button):
     def __init__(self, label, screen, *, emoji=None, action=None, style=discord.ButtonStyle.secondary, button_key=None, row=None):
         # A screen may have multiple buttons targeting the same destination.
@@ -661,14 +683,16 @@ class NavButton(discord.ui.Button):
                          custom_id=f'climber:v3:{screen}:{action or "nav"}:{key}', row=row)
         self.screen, self.action = screen, action
     async def callback(self, interaction):
-        if self.screen not in ('help', 'rankings') and not await require_live(interaction):
-            return
-        if self.screen=='help':
-            await interaction.response.edit_message(embed=help_embed(), view=HelpView())
-        elif self.screen=='rankings':
-            await interaction.response.edit_message(embed=rankings_embed(), view=RankingsView())
-        else:
-            await show_player(interaction, self.screen, self.action)
+        async def handle():
+            if self.screen not in ('help', 'rankings') and not await require_live(interaction):
+                return
+            if self.screen=='help':
+                await interaction.response.edit_message(content=None, embed=help_embed(), view=HelpView())
+            elif self.screen=='rankings':
+                await interaction.response.edit_message(content=None, embed=rankings_embed(), view=RankingsView())
+            else:
+                await show_player(interaction, self.screen, self.action)
+        await run_player_ui_once(interaction, handle)
 
 class GameView(discord.ui.View):
     def __init__(self, screen='home'):
@@ -964,28 +988,29 @@ class HeroClassButton(discord.ui.Button):
         self.hero_class = hero_class
 
     async def callback(self, interaction):
-        if not await require_live(interaction):
-            return
-        await interaction.response.defer(thinking=False)
-        try:
-            with game.open_db() as db:
-                existing = game.get_player(db, interaction.user.id)
-                s = existing or game.create_player(db, interaction.user.id,
-                                                   interaction.user.display_name, self.hero_class)
-            s['_user_id'] = interaction.user.id
-            await interaction.edit_original_response(content=None,
-                embed=player_embed(s, '🎉 Hero ready! Enter the dungeon.' if not existing
-                                   else 'Your existing hero is ready.'), view=GameView('home'))
+        async def handle():
+            if not await require_live(interaction):
+                return
+            await interaction.response.defer(thinking=False)
             try:
-                await assign_role(interaction)
+                with game.open_db() as db:
+                    existing = game.get_player(db, interaction.user.id)
+                    s = existing or game.create_player(db, interaction.user.id,
+                                                       interaction.user.display_name, self.hero_class)
+                s['_user_id'] = interaction.user.id
+                await interaction.edit_original_response(content=None,
+                    embed=player_embed(s, '🎉 Hero ready! Enter the dungeon.' if not existing
+                                       else 'Your existing hero is ready.'), view=GameView('home'))
+                try:
+                    await assign_role(interaction)
+                except Exception:
+                    logging.exception('Could not refresh role for new hero')
+            except ValueError as exc:
+                await show_ui_notice(interaction, f'⚠️ {exc}', error=True)
             except Exception:
-                logging.exception('Could not refresh role for new hero')
-        except ValueError as exc:
-            await show_ui_notice(interaction, f'⚠️ {exc}', error=True)
-        except Exception:
-            logging.exception('Character creation failed')
-            await show_ui_notice(interaction, 'Could not create hero. Please try again.', error=True)
-
+                logging.exception('Character creation failed')
+                await show_ui_notice(interaction, 'Could not create hero. Please try again.', error=True)
+        await run_player_ui_once(interaction, handle)
 
 class ClassView(discord.ui.View):
     def __init__(self):
