@@ -966,6 +966,16 @@ async def remove_role(interaction):
         logging.exception('Could not remove Abyss Ascension role')
         return False
 
+def has_participant_role(interaction):
+    """Existing Discord role holders can play without a panel_joins record."""
+    if not ROLE_ID or not isinstance(interaction.user, discord.Member):
+        return False
+    try:
+        role_id = int(ROLE_ID)
+    except ValueError:
+        return False
+    return any(role.id == role_id for role in interaction.user.roles)
+
 def hero_creation_embed():
     e = discord.Embed(
         title='⚔️ ABYSS ASCENSION | CHOOSE YOUR HERO',
@@ -1071,7 +1081,7 @@ class LaunchJoinButton(discord.ui.Button):
             ensure_panel_schema(db)
             registered = db.execute('SELECT 1 FROM panel_joins WHERE user_id=?', (interaction.user.id,)).fetchone()
             existing = game.get_player(db, interaction.user.id)
-        if not registered and not existing:
+        if not registered and not existing and not has_participant_role(interaction):
             await interaction.response.send_message('🔒 Register first using the original public role panel to receive your participant role.', ephemeral=True)
             return
         if existing:
