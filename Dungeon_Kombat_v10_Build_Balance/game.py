@@ -384,7 +384,16 @@ def _one_battle(s,rng):
         return 'Legendary boss waiting — fight it using the Boss button'
     # Smart farming: do not blindly spend battles on unwinnable floors.
     odds=combat_odds(s,target)
-    farming=s['farming'] or (odds<0.61 and s['retry_streak']>=2)
+    # Onboarding: the opening floors must not trap freshly created heroes.
+    # Preserve normal combat difficulty and resource farming from Floor 10 onward.
+    if target <= 5:
+        odds = max(odds, 0.90)
+    elif target <= 9:
+        odds = max(odds, 0.75)
+    farming=(target >= 10) and (s['farming'] or (odds<0.61 and s['retry_streak']>=2))
+    if target < 10:
+        s['farming'] = False
+        s['farming_steps'] = 0
     if farming:
         s['farming']=True;s['farming_steps']+=1;s['farm']+=1
         s['gold']+=round((16+s['floor']*0.9)*treasure_multiplier(s))

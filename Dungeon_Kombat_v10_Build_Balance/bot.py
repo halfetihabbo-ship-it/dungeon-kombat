@@ -11,7 +11,7 @@ from discord.ext import commands, tasks
 import game
 
 logging.basicConfig(level=logging.INFO)
-logging.info('ABYSS_BUILD=2026-11-23-PUBLIC-HERO-PRIVATE-UI')
+logging.info('ABYSS_BUILD=2026-11-23-FLOOR1-FIX-PUBLIC-HERO-PRIVATE-UI')
 TOKEN = os.getenv('DISCORD_TOKEN', '').strip()
 GUILD_ID = os.getenv('GUILD_ID', '').strip()
 ROLE_ID = os.getenv('DISCORD_ROLE_ID', '1574002249099644970').strip()
