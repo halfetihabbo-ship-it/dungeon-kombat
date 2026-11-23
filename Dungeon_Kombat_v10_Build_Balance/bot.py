@@ -117,7 +117,6 @@ async def publish_join_panel(interaction):
 def panel_embed():
     with game.open_db() as db:
         status = event_text(db)
-        joined = joined_count(db)
     e = discord.Embed(
         title='⚔️ ABYSS ASCENSION | THE DUNGEON AWAITS ⚔️',
         description=(
@@ -134,10 +133,9 @@ def panel_embed():
             '⚡ **REGISTER NOW — THE DUNGEON OPENS AT 6 PM GMT!**\n'
             '👇 **CLICK JOIN TO REGISTER — OR LEAVE TO WITHDRAW** 👇'
         ), color=GOLD)
-    e.add_field(name='👥 ADVENTURERS JOINED', value=f'**{joined:,} players** have entered the competition!', inline=False)
     e.add_field(name='📅 EVENT SCHEDULE', value=(
         '**Starts:** 23 November 2026 at 6:00 PM GMT\n'
-        '**Ends:** 1 December 2026 at 6:00 PM GMT\n' + status), inline=False)
+        '**Ends:** 1 December 2026 at 6:00 PM GMT'), inline=False)
     e.add_field(name='🎮 HOW TO JOIN', value=(
         '**1️⃣ Click Join** to receive your participant role (or Leave to withdraw).\n'
         '**2️⃣ Wait until 23 November at 6:00 PM GMT.** No game starts yet.\n'
