@@ -10,6 +10,7 @@ from discord.ext import commands, tasks
 import game
 
 logging.basicConfig(level=logging.INFO)
+logging.info('ABYSS_BUILD=2026-11-23-RESTART-CLASS-UI')
 TOKEN = os.getenv('DISCORD_TOKEN', '').strip()
 GUILD_ID = os.getenv('GUILD_ID', '').strip()
 ROLE_ID = os.getenv('DISCORD_ROLE_ID', '1574002249099644970').strip()
@@ -227,6 +228,11 @@ def help_embed():
                 e.add_field(name=f'📘 MORE HELP ({index})', value=piece, inline=False)
                 section = section[1000:]
                 index += 1
+    # Discord rejects descriptions over 4096 characters; keep the quick-start
+    # available even when the full guide grows beyond the embed limit.
+    if len(e.description or '') > 4000:
+        full_guide = e.description
+        e.description = full_guide[:3900].rsplit('\n', 1)[0] + '\n\n📖 More guidance is available through the game menus.'
     e.add_field(name='🎁 PRIZES',value=prize_text(),inline=False)
     e.set_footer(text='Only /play is required • Button menus edit the same private panel')
     return e
@@ -417,7 +423,13 @@ def player_embed(s, notice='', screen='home'):
     e.set_footer(text='⚔️ Battles: 45 seconds • 🌙 Offline: 8 hours • 🏆 8-day event • 📖 Help available')
     return e
 
+def safe_embed(embed):
+    if embed is not None and embed.description and len(embed.description) > 4096:
+        embed.description = embed.description[:3900].rsplit('\n', 1)[0] + '\n\n…'
+    return embed
+
 async def send_private(interaction, *, embed=None, view=None, content=None):
+    embed = safe_embed(embed)
     if interaction.response.is_done():
         # A deferred button press must update its existing private panel,
         # never post another ephemeral follow-up in the channel.
@@ -612,7 +624,7 @@ async def show_player(interaction, screen='home', action=None):
         await interaction.response.defer(thinking=False)
         with game.open_db() as db:
             if not game.get_player(db, interaction.user.id):
-                return await send_private(interaction, embed=discord.Embed(title='⚔️ CREATE YOUR HERO', description='Choose your hero class to start your adventure.', color=GOLD), view=ClassView())
+                return await send_private(interaction, embed=hero_creation_embed(), view=ClassView())
             s, notice = (game.mutate(db, interaction.user.id, interaction.user.display_name, action)
                          if action else game.refresh(db, interaction.user.id, interaction.user.display_name))
         s['_user_id']=interaction.user.id
@@ -641,12 +653,12 @@ async def show_player(interaction, screen='home', action=None):
             logging.exception('Unable to update panel with menu error')
 
 class NavButton(discord.ui.Button):
-    def __init__(self, label, screen, *, emoji=None, action=None, style=discord.ButtonStyle.secondary, button_key=None):
+    def __init__(self, label, screen, *, emoji=None, action=None, style=discord.ButtonStyle.secondary, button_key=None, row=None):
         # A screen may have multiple buttons targeting the same destination.
         # Include a stable per-button key so Discord never receives duplicate IDs.
         key = button_key or label.lower().replace(" ", "_")
         super().__init__(label=label, emoji=emoji, style=style,
-                         custom_id=f'climber:v3:{screen}:{action or "nav"}:{key}')
+                         custom_id=f'climber:v3:{screen}:{action or "nav"}:{key}', row=row)
         self.screen, self.action = screen, action
     async def callback(self, interaction):
         if self.screen not in ('help', 'rankings') and not await require_live(interaction):
@@ -813,8 +825,22 @@ class GameView(discord.ui.View):
             # Most submenus offer Back and Home; fit within Discord's five rows.
             if len(buttons)<24:
                 buttons.append(('Home','home','🏠',None,discord.ButtonStyle.secondary))
+        # Consistent colour language: blue = destinations, green = actions,
+        # red = risky actions, grey = Back/Home. Discord controls button widths.
+        risky = {'boss_power', 'expedition_fight', 'chamber_crimson',
+                 'chamber_attack', 'arena_nightmare', 'portal_blood'}
         for index,(label,target,emoji,action,style) in enumerate(buttons):
-            self.add_item(NavButton(label,target,emoji=emoji,action=action,style=style,button_key=f"{index}:{label.lower().replace(chr(32), chr(95))}"))
+            if label in ('Back', 'Home', 'Leave', 'Retreat', 'Unequip', 'Free Reset'):
+                style = discord.ButtonStyle.secondary
+            elif action in risky:
+                style = discord.ButtonStyle.danger
+            elif action:
+                style = discord.ButtonStyle.success
+            else:
+                style = discord.ButtonStyle.primary
+            self.add_item(NavButton(label,target,emoji=emoji,action=action,
+                                    style=style,button_key=f"{index}:{label.lower().replace(chr(32), chr(95))}",
+                                    row=index//4))
 
 class InventorySelect(discord.ui.Select):
     def __init__(self,s,kind):
@@ -823,7 +849,7 @@ class InventorySelect(discord.ui.Select):
         options=[discord.SelectOption(label=f"{x['name']} ({x['rarity']})"[:100],
                    description=f"{x['kind']} · {game.gear_stat(x)} power"[:100],value=x['id'],
                    emoji='🔒' if x.get('locked') else ('⚔️' if x['kind']=='weapon' else '🛡️')) for x in items[:25]]
-        super().__init__(placeholder=f'Select {kind} to manage ({len(items)}/20)',options=options or [discord.SelectOption(label='No stored gear',value='empty')],row=1)
+        super().__init__(placeholder=f'Select {kind} to manage ({len(items)}/20)',options=options or [discord.SelectOption(label='No stored gear',value='empty')],row=1 if kind=='weapon' else 2)
         self.disabled=not bool(items)
     async def callback(self,interaction):
         item_id=self.values[0]
@@ -916,33 +942,58 @@ async def remove_role(interaction):
         logging.exception('Could not remove Abyss Ascension role')
         return False
 
-class HeroSelect(discord.ui.Select):
-    def __init__(self):
-        super().__init__(placeholder='🧙 Choose your hero class to begin!', custom_id='climber:v2:class',
-                         options=[discord.SelectOption(label='Berserker',description='⚔️ Powerful attacks',emoji='⚔️'),
-                                  discord.SelectOption(label='Guardian',description='🛡️ Strong defence and health',emoji='🛡️'),
-                                  discord.SelectOption(label='Rogue',description='🗡️ Swift, balanced fighter',emoji='🗡️')])
+def hero_creation_embed():
+    e = discord.Embed(
+        title='⚔️ ABYSS ASCENSION | CHOOSE YOUR HERO',
+        description=(
+            '**A fresh adventure begins here.** Pick one class to create your new hero.\n\n'
+            '⚔️ **Berserker** — Heavy damage, aggressive combat.\n'
+            '🛡️ **Guardian** — Higher defence and survivability.\n'
+            '🗡️ **Rogue** — Agile, versatile fighter.\n\n'
+            'Your choice creates a **Level 1 hero on Floor 1**. '
+            'After a gameplay reset, your previous character does not return.'),
+        color=PURPLE)
+    e.set_footer(text='Choose a class below • Your game opens in this same private panel')
+    return e
+
+
+class HeroClassButton(discord.ui.Button):
+    def __init__(self, hero_class, emoji):
+        super().__init__(label=hero_class, emoji=emoji, style=discord.ButtonStyle.primary,
+                         custom_id=f'climber:v6:choose:{hero_class.lower()}', row=0)
+        self.hero_class = hero_class
+
     async def callback(self, interaction):
         if not await require_live(interaction):
             return
+        await interaction.response.defer(thinking=False)
         try:
             with game.open_db() as db:
-                existing=game.get_player(db,interaction.user.id)
-                s=existing or game.create_player(db,interaction.user.id,interaction.user.display_name,self.values[0])
-            await assign_role(interaction)
-            await refresh_join_panels(interaction)
-            await interaction.response.edit_message(embed=player_embed(s,'🎉 Hero created! Welcome to the dungeon.'),view=GameView())
+                existing = game.get_player(db, interaction.user.id)
+                s = existing or game.create_player(db, interaction.user.id,
+                                                   interaction.user.display_name, self.hero_class)
+            s['_user_id'] = interaction.user.id
+            await interaction.edit_original_response(content=None,
+                embed=player_embed(s, '🎉 Hero ready! Enter the dungeon.' if not existing
+                                   else 'Your existing hero is ready.'), view=GameView('home'))
+            try:
+                await assign_role(interaction)
+            except Exception:
+                logging.exception('Could not refresh role for new hero')
         except ValueError as exc:
             await show_ui_notice(interaction, f'⚠️ {exc}', error=True)
         except Exception:
             logging.exception('Character creation failed')
             await show_ui_notice(interaction, 'Could not create hero. Please try again.', error=True)
 
+
 class ClassView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
-        self.add_item(HeroSelect())
-        self.add_item(NavButton('Read Quick Start','help',emoji='📖'))
+        for hero_class, emoji in [('Berserker','⚔️'), ('Guardian','🛡️'), ('Rogue','🗡️')]:
+            self.add_item(HeroClassButton(hero_class, emoji))
+        self.add_item(NavButton('Quick Start','help',emoji='📖',row=1,
+                                style=discord.ButtonStyle.secondary))
 
 class JoinButton(discord.ui.Button):
     def __init__(self):
@@ -1001,10 +1052,55 @@ class LaunchJoinButton(discord.ui.Button):
         if existing:
             await send_private(interaction, embed=player_embed(existing), view=GameView())
         else:
-            await send_private(interaction, embed=discord.Embed(
-                title='🧙✨ YOUR ADVENTURE BEGINS!',
-                description='Choose your hero class below to enter Abyss Ascension.\n\n⚔️ **Berserker** — Heavy damage\n🛡️ **Guardian** — High health and defence\n🗡️ **Rogue** — Swift balanced fighter',
-                color=GOLD), view=ClassView())
+            await send_private(interaction, embed=hero_creation_embed(), view=ClassView())
+
+def restarted_launch_embed():
+    return discord.Embed(
+        title='⚔️ ABYSS ASCENSION — A NEW ADVENTURE!',
+        description=(
+            '🔄 **The dungeon has been restarted!**\n\n'
+            'Your previous hero progress has been reset. Registered adventurers can '
+            'click **⚔️ START PLAYING** below to choose a fresh hero.\n\n'
+            '⚔️ **Berserker** — Heavy damage\n'
+            '🛡️ **Guardian** — High defence\n'
+            '🗡️ **Rogue** — Versatile fighter\n\n'
+            '🏆 **1st:** 200c + HC Box\n'
+            '🥈 **2nd:** 125c + HC Box\n'
+            '🥉 **3rd:** 75c + HC Box\n\n'
+            f'⏳ Event ends <t:{int(FINISH_AT)}:F> (<t:{int(FINISH_AT)}:R>).'
+        ), color=GOLD)
+
+
+async def refresh_launch_panel_after_restart():
+    """Edit the original launch panel in place; create one only if it is missing."""
+    if not GAME_CHANNEL_ID:
+        raise RuntimeError('GAME_CHANNEL_ID is not configured')
+    channel = bot.get_channel(GAME_CHANNEL_ID) or await bot.fetch_channel(GAME_CHANNEL_ID)
+    if not isinstance(channel, (discord.TextChannel, discord.Thread)):
+        raise RuntimeError('GAME_CHANNEL_ID must be a text channel or thread')
+    with game.open_db() as db:
+        row = db.execute("SELECT value FROM config WHERE key='launch_panel_message_id'").fetchone()
+    message_id = int(row['value']) if row and row['value'].isdigit() else None
+    if message_id:
+        try:
+            message = await channel.fetch_message(message_id)
+            if message.author.id != bot.user.id:
+                raise RuntimeError('Saved launch panel belongs to a different bot')
+            await message.edit(content='⚔️ **ABYSS ASCENSION — NEW ADVENTURE!**',
+                               embed=restarted_launch_embed(), view=LaunchView(),
+                               allowed_mentions=discord.AllowedMentions.none())
+            logging.info('Refreshed existing Start Playing panel %s', message_id)
+            return 'updated'
+        except discord.NotFound:
+            logging.warning('Original Start Playing panel %s was deleted; creating replacement', message_id)
+    message = await channel.send(content='⚔️ **ABYSS ASCENSION — NEW ADVENTURE!**',
+                                 embed=restarted_launch_embed(), view=LaunchView(),
+                                 allowed_mentions=discord.AllowedMentions.none())
+    with game.open_db() as db:
+        db.execute("INSERT OR REPLACE INTO config(key,value) VALUES('launch_panel_message_id',?)", (str(message.id),))
+    logging.info('Created replacement Start Playing panel %s', message.id)
+    return 'created'
+
 
 class LaunchView(discord.ui.View):
     def __init__(self):
@@ -1075,10 +1171,18 @@ class ResetProgressConfirmView(discord.ui.View):
             logging.exception('Progress-only reset failed')
             await interaction.edit_original_response(content='⚠️ Reset failed; see Railway logs.', view=None)
             return
+        panel_message = 'The Start Playing panel was refreshed in the game channel.'
+        try:
+            result = await refresh_launch_panel_after_restart()
+            panel_message = ('The existing Start Playing panel was updated in place.' if result == 'updated'
+                             else 'The old panel was missing, so a replacement was posted.')
+        except Exception:
+            logging.exception('Restart succeeded but the Start Playing panel could not be refreshed')
+            panel_message = '⚠️ The restart succeeded, but the Start Playing panel could not be updated. Players can still use /play.'
         logging.warning('Progress reset by %s; %s heroes removed', interaction.user.id, removed)
         await interaction.edit_original_response(content=(
             f'✅ **Progress reset complete.** Removed **{removed}** hero saves and their journals. '
-            'Registrations, participant roles, published panels, join counter and event schedule are preserved.'), view=None)
+            'Registrations, participant roles and event schedule are preserved. Everyone can choose a fresh hero with /play.\n' + panel_message), view=None)
         self.stop()
 
     @discord.ui.button(label='Cancel', style=discord.ButtonStyle.secondary, emoji='✖️')
@@ -1124,7 +1228,7 @@ class ResetGameConfirmView(discord.ui.View):
 # /publishpanel and /play panel:True are operator-protected exceptions.
 async def game_channel_only(interaction: discord.Interaction) -> bool:
     command_name = getattr(getattr(interaction, 'command', None), 'name', None)
-    if command_name in ('resetprogress', 'resetgame'):
+    if command_name in ('resetprogress', 'resetgame', 'restartgame'):
         return True
     if command_name in ('publishpanel', 'updatepanel', 'deletemessage'):
         return True
@@ -1157,6 +1261,23 @@ async def resetprogress(interaction: discord.Interaction):
         f'This deletes **{player_count}** saved heroes, including levels, floors, equipment, gold and leaderboard progress.\n'
         f'**{registrations}** registered users remain registered; the participant roles, panels and launch schedule are untouched.\n\n'
         'Make sure you have backed up your Railway database. Confirm within 60 seconds or cancel.',
+        view=ResetProgressConfirmView(interaction.user.id), ephemeral=True)
+
+
+@bot.tree.command(name='restartgame', description='Restart the competition: everyone chooses a fresh hero; registrations stay')
+@app_commands.guild_only()
+async def restartgame(interaction: discord.Interaction):
+    if not can_publish_panel(interaction):
+        await interaction.response.send_message('🔒 Only the bot operator or a server manager can restart the game.', ephemeral=True)
+        return
+    with game.open_db() as db:
+        count = db.execute('SELECT COUNT(*) FROM players').fetchone()[0]
+    await interaction.response.send_message(
+        '⚠️ **RESTART GAME — FRESH HEROES FOR EVERYONE**\n\n'
+        f'This deletes **{count}** existing heroes, levels, equipment and leaderboard progress. '
+        'Everyone can then use `/play` or the Start Playing button to choose Berserker, Guardian or Rogue again.\n\n'
+        '**Registrations, participant roles, public panels and event dates remain unchanged.** '
+        'This does not restart the event clock. Back up the Railway database before confirming.',
         view=ResetProgressConfirmView(interaction.user.id), ephemeral=True)
 
 
@@ -1321,9 +1442,7 @@ async def play(interaction:discord.Interaction,panel:bool=False):
         await notify_goblin(interaction.user,s)
         await notify_portals(interaction.user,s)
     else:
-        await send_private(interaction,embed=discord.Embed(
-            title='🏰⚔️ WELCOME TO ABYSS ASCENSION!',
-            description='## 🚀 CREATE YOUR HERO!\nSelect your class below and start your eight-day adventure.\n\n📖 New player? Tap **Read Quick Start** for an easy guide.',color=GOLD),view=ClassView())
+        await send_private(interaction,embed=hero_creation_embed(),view=ClassView())
 
 @tasks.loop(minutes=5)
 async def send_adventure_digests():
