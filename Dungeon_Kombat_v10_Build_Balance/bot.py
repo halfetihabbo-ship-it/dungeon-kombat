@@ -11,7 +11,7 @@ from discord.ext import commands, tasks
 import game
 
 logging.basicConfig(level=logging.INFO)
-logging.info('ABYSS_BUILD=2026-11-23-STABLE-PANEL-GUARD')
+logging.info('ABYSS_BUILD=2026-11-23-PUBLIC-HERO-PRIVATE-UI')
 TOKEN = os.getenv('DISCORD_TOKEN', '').strip()
 GUILD_ID = os.getenv('GUILD_ID', '').strip()
 ROLE_ID = os.getenv('DISCORD_ROLE_ID', '1574002249099644970').strip()
@@ -1122,19 +1122,97 @@ async def refresh_launch_panel_after_restart():
             if message.author.id != bot.user.id:
                 raise RuntimeError('Saved launch panel belongs to a different bot')
             await message.edit(content='⚔️ **ABYSS ASCENSION — NEW ADVENTURE!**',
-                               embed=restarted_launch_embed(), view=LaunchView(),
+                               embed=public_hero_embed(), view=PublicHeroView(),
                                allowed_mentions=discord.AllowedMentions.none())
             logging.info('Refreshed existing Start Playing panel %s', message_id)
             return 'updated'
         except discord.NotFound:
             logging.warning('Original Start Playing panel %s was deleted; creating replacement', message_id)
     message = await channel.send(content='⚔️ **ABYSS ASCENSION — NEW ADVENTURE!**',
-                                 embed=restarted_launch_embed(), view=LaunchView(),
+                                 embed=public_hero_embed(), view=PublicHeroView(),
                                  allowed_mentions=discord.AllowedMentions.none())
     with game.open_db() as db:
         db.execute("INSERT OR REPLACE INTO config(key,value) VALUES('launch_panel_message_id',?)", (str(message.id),))
     logging.info('Created replacement Start Playing panel %s', message.id)
     return 'created'
+
+
+class PublicHeroButton(discord.ui.Button):
+    """Public class choice -> a new private (ephemeral) player interface."""
+    def __init__(self, hero_class, emoji):
+        super().__init__(label=hero_class, emoji=emoji, style=discord.ButtonStyle.primary,
+                         custom_id=f'climber:v7:public_hero:{hero_class.lower()}')
+        self.hero_class = hero_class
+
+    async def callback(self, interaction):
+        if not await require_live(interaction):
+            return
+        if GAME_CHANNEL_ID and interaction.channel_id != GAME_CHANNEL_ID:
+            await interaction.response.send_message(f'🎮 Please use <#{GAME_CHANNEL_ID}>.', ephemeral=True)
+            return
+        with game.open_db() as db:
+            ensure_panel_schema(db)
+            registered = db.execute('SELECT 1 FROM panel_joins WHERE user_id=?', (interaction.user.id,)).fetchone()
+            existing = game.get_player(db, interaction.user.id)
+        if not registered and not existing and not has_participant_role(interaction):
+            await interaction.response.send_message(
+                '🔒 You need the participant role to play. Join using the registration panel first.',
+                ephemeral=True)
+            return
+
+        async def open_private_hero():
+            # A public button must NEVER be edited: every player gets their own
+            # ephemeral message, so the shared selection panel stays visible.
+            await interaction.response.defer(ephemeral=True, thinking=True)
+            try:
+                with game.open_db() as db:
+                    s = game.get_player(db, interaction.user.id)
+                    if s is None:
+                        try:
+                            s = game.create_player(db, interaction.user.id,
+                                                   interaction.user.display_name, self.hero_class)
+                            notice = f'🎉 Your {self.hero_class} is ready! Enter the dungeon.'
+                        except ValueError as exc:
+                            # A simultaneous request may already have created the hero.
+                            s = game.get_player(db, interaction.user.id)
+                            if s is None:
+                                raise exc
+                            notice = 'Your existing hero is ready.'
+                    else:
+                        notice = 'Your existing hero is ready.'
+                s['_user_id'] = interaction.user.id
+                await interaction.edit_original_response(
+                    content=None, embed=player_embed(s, notice), view=GameView('home'))
+            except ValueError as exc:
+                await interaction.edit_original_response(content=f'⚠️ {exc}', embed=None, view=None)
+            except Exception:
+                logging.exception('Public hero selection failed for user %s', interaction.user.id)
+                await interaction.edit_original_response(
+                    content='⚠️ Unable to open your adventure. Please try again.', embed=None, view=None)
+        await run_player_ui_once(interaction, open_private_hero)
+
+
+class PublicHeroView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+        for hero_class, emoji in [('Berserker', '⚔️'), ('Guardian', '🛡️'), ('Rogue', '🗡️')]:
+            self.add_item(PublicHeroButton(hero_class, emoji))
+
+
+def public_hero_embed():
+    return discord.Embed(
+        title='⚔️ ABYSS ASCENSION — CHOOSE YOUR HERO',
+        description=(
+            '**Choose your hero below to begin your adventure!**\n\n'
+            '⚔️ **Berserker** — Heavy damage and aggressive combat\n'
+            '🛡️ **Guardian** — Strong defence and survivability\n'
+            '🗡️ **Rogue** — Agile, versatile fighter\n\n'
+            '🔒 **Your game interface opens privately after you choose.** '
+            'This panel stays here for every adventurer.\n\n'
+            'Already have a hero? Click any class to reopen your existing adventure.\n'
+            '🏆 **1st:** 200c + HC Box · **2nd:** 125c + HC Box · **3rd:** 75c + HC Box\n'
+            f'⏳ Event ends <t:{int(FINISH_AT)}:F> (<t:{int(FINISH_AT)}:R>).'
+        ), color=GOLD)
 
 
 class LaunchView(discord.ui.View):
@@ -1160,7 +1238,7 @@ async def announce_launch():
                      'Registered adventurers: click **⚔️ START PLAYING** below to choose your hero and begin!\n\n'
                      '🏆 **1st:** 200c + HC Box\n🥈 **2nd:** 125c + HC Box\n🥉 **3rd:** 75c + HC Box\n\n'
                      f'⏳ The competition ends <t:{int(FINISH_AT)}:F> (<t:{int(FINISH_AT)}:R>).'), color=GOLD)
-    msg = await channel.send(content='@everyone ⚔️ **ABYSS ASCENSION HAS BEGUN!**', embed=embed, view=LaunchView(),
+    msg = await channel.send(content='@everyone ⚔️ **ABYSS ASCENSION HAS BEGUN!**', embed=public_hero_embed(), view=PublicHeroView(),
                              allowed_mentions=discord.AllowedMentions(everyone=True))
     with game.open_db() as db:
         db.execute("INSERT OR REPLACE INTO config(key,value) VALUES('launch_panel_message_id',?)", (str(msg.id),))
@@ -1206,10 +1284,10 @@ class ResetProgressConfirmView(discord.ui.View):
             logging.exception('Progress-only reset failed')
             await interaction.edit_original_response(content='⚠️ Reset failed; see Railway logs.', view=None)
             return
-        panel_message = 'The Start Playing panel was refreshed in the game channel.'
+        panel_message = 'The public Choose Your Hero panel was refreshed in the game channel.'
         try:
             result = await refresh_launch_panel_after_restart()
-            panel_message = ('The existing Start Playing panel was updated in place.' if result == 'updated'
+            panel_message = ('The existing Choose Your Hero panel was updated in place.' if result == 'updated'
                              else 'The old panel was missing, so a replacement was posted.')
         except Exception:
             logging.exception('Restart succeeded but the Start Playing panel could not be refreshed')
@@ -1461,13 +1539,13 @@ async def postheropanel(interaction: discord.Interaction):
             raise ValueError('GAME_CHANNEL_ID must be a text channel or thread')
         message = await channel.send(
             content='⚔️ **ABYSS ASCENSION — CHOOSE YOUR HERO!**',
-            embed=restarted_launch_embed(), view=LaunchView(),
+            embed=public_hero_embed(), view=PublicHeroView(),
             allowed_mentions=discord.AllowedMentions.none())
         with game.open_db() as db:
             db.execute("INSERT OR REPLACE INTO config(key,value) VALUES('launch_panel_message_id',?)", (str(message.id),))
         await interaction.followup.send(
             f'✅ New **Choose Your Hero** panel posted in <#{GAME_CHANNEL_ID}>: {message.jump_url}\n'
-            'Registered players can click **Start Playing** to choose a hero. No progress was reset.', ephemeral=True)
+            'Players can choose a class directly and open their private interface. No progress was reset.', ephemeral=True)
     except Exception:
         logging.exception('Could not publish new Choose Your Hero panel')
         await interaction.followup.send(
@@ -1552,7 +1630,7 @@ async def setup_hook():
             logging.error('INCOMPATIBLE game.py: missing %s; deploy bot.py and game.py together', required)
     if not send_adventure_digests.is_running():send_adventure_digests.start()
     if not launch_watch.is_running():launch_watch.start()
-    for view in (JoinView(),LaunchView(),ClassView(),GameView('home'),GameView('dungeon'),GameView('hero'),GameView('kingdom'),GameView('activities_menu'),GameView('info'),GameView('smith'),GameView('activities'),
+    for view in (JoinView(),LaunchView(),PublicHeroView(),ClassView(),GameView('home'),GameView('dungeon'),GameView('hero'),GameView('kingdom'),GameView('activities_menu'),GameView('info'),GameView('smith'),GameView('activities'),
                  GameView('journal'),GameView('boss'),GameView('arena'),GameView('pets'),GameView('skills'),GameView('merchant'),GameView('wheel'),GameView('quests'),GameView('enchant'),GameView('expedition'),GameView('checkpoint'),GameView('build'),GameView('inventory'),GameView('goblin'),GameView('portal'),GameView('camp'),GameView('relics'),GameView('chamber'),HelpView(),RankingsView()):
         bot.add_view(view)
     if GUILD_ID:
